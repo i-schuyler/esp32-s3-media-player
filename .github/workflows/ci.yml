@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [ "main", "master" ]
+
+jobs:
+  policy-gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate PR template fields (RISK/BREAKING)
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          body="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq .body)"
+          echo "$body" > pr_body.txt
+
+          # Required tokens
+          grep -Eq '^RISK: (low|med|high)$' pr_body.txt || (echo "Missing/invalid: RISK: low|med|high" && exit 1)
+          grep -Eq '^BREAKING: (yes|no)$' pr_body.txt || (echo "Missing/invalid: BREAKING: yes|no" && exit 1)
+
+          # Enforce issue link
+          grep -Eq 'https://github.com/.+/.+/issues/[0-9]+' pr_body.txt || (echo "Missing issue link URL" && exit 1)
+
+      - name: Forbidden paths guard (edit list as repo grows)
+        run: |
+          set -euo pipefail
+          # Placeholder: once firmware code exists, lock sensitive areas here.
+          echo "OK (no forbidden paths configured yet)"
+
+  # Placeholder for future firmware builds.
+  # Add a build job once we choose ESP-IDF vs PlatformIO structure.
