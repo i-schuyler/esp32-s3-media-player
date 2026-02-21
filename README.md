@@ -22,3 +22,6 @@ Most mobile players will only buffer small portions when Range is supported.
 
 ## License
 MIT (see `LICENSE`).
+
+## Issue → PR automation
+See `docs/ISSUE_TO_PR_WORKFLOW.md` and `.github/workflows/codex-issue-to-pr.yml`.

@@ -1,0 +1,47 @@
+name: Codex Issue to PR
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: read
+
+jobs:
+  draft-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Codex creates a PR implementing the issue with minimal, test-gated changes.
+      - name: Codex draft PR from issue
+        uses: openai/codex-action@v1
+        with:
+          # Keep the agent focused and safe.
+          # It should:
+          # - create a slice plan in the PR body
+          # - implement minimal changes
+          # - follow the PR template fields (RISK/BREAKING/NEEDS_HIL)
+          prompt: |
+            You are an automation agent for this repository.
+            Read the newly opened GitHub Issue (title + body) and do the following:
+
+            1) Convert it into an implementation plan that references ACCEPTANCE.md and docs/SMOKE_TEST_SPEC.md.
+            2) Implement only the minimum necessary code/docs to satisfy the request.
+               - No refactors unless required.
+               - No unrelated features.
+            3) Open a pull request with:
+               - A link to the Issue URL
+               - A short Scope section
+               - RISK: low|med|high (choose conservatively)
+               - BREAKING: no unless absolutely required
+               - NEEDS_HIL: no (until a HIL runner exists)
+            4) Ensure the PR will pass policy-gates in CI.
+
+            If you cannot safely implement without more info, open a PR that adds a clarifying question to the Issue as a comment
+            and include a minimal "investigation" change (docs only), with RISK: low and NEEDS_HIL: no.
+
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}

@@ -10,7 +10,7 @@
 ## Risk / safety
 RISK: low|med|high
 BREAKING: yes|no
-NEEDS_HIL: yes|no
+NEEDS_HIL: yes|no  (NOTE: for now NEEDS_HIL must be no)
 
 ## Evidence
 - CI link:
