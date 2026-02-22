@@ -45,3 +45,38 @@ jobs:
             and include a minimal "investigation" change (docs only), with RISK: low and NEEDS_HIL: no.
 
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+
+- name: Find created PR and comment on the issue
+  if: always()
+  uses: actions/github-script@v7
+  with:
+    github-token: ${{ github.token }}
+    script: |
+      const issueNumber = context.payload.issue.number;
+      const owner = context.repo.owner;
+      const repo = context.repo.repo;
+
+      // Search open PRs that mention this issue (by full URL first, then "#<num>").
+      const qUrl = `repo:${owner}/${repo} is:pr is:open ${context.payload.issue.html_url}`;
+      const qHash = `repo:${owner}/${repo} is:pr is:open (#${issueNumber})`;
+
+      async function search(q) {
+        return await github.rest.search.issuesAndPullRequests({ q, per_page: 5 });
+      }
+
+      let results = await search(qUrl);
+      if (!results.data.items.length) results = await search(qHash);
+
+      if (!results.data.items.length) {
+        await github.rest.issues.createComment({
+          owner, repo, issue_number: issueNumber,
+          body: `Codex workflow ran, but I couldn't find an open PR referencing this issue yet. Check Actions logs for details.`,
+        });
+        return;
+      }
+
+      const pr = results.data.items.sort((a,b)=> new Date(b.updated_at)-new Date(a.updated_at))[0];
+      await github.rest.issues.createComment({
+        owner, repo, issue_number: issueNumber,
+        body: `PR created: ${pr.html_url}`,
+      });

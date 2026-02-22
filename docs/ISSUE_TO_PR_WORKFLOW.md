@@ -31,3 +31,6 @@ gh secret set OPENAI_API_KEY
 
 ## Notes
 - If you later prefer OAuth/Codex subscription instead of an API key, we can adjust the workflow.
+
+## Notification
+On success, the workflow comments on the originating issue with `PR created: <link>`.
