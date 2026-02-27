@@ -56,6 +56,7 @@ jobs:
           github.event_name == 'workflow_dispatch'
         uses: openai/codex-action@v1
         with:
+          sandbox: danger-full-access
           prompt: |
             You are an automation agent for this repository.
             Read the GitHub Issue (title + body) and do the following:
