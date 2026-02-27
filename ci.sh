@@ -24,9 +24,14 @@ done
 
 echo "OK: required policy files present."
 
-# Future hook: firmware build/tests once repo has code.
 if [[ -f "platformio.ini" ]]; then
-  echo "Detected PlatformIO project; run build here (future)."
+  echo "Detected PlatformIO project; running build for esp32-s3-devkitc-1-n32r16v."
+  if ! command -v pio >/dev/null 2>&1; then
+    echo "PlatformIO not found; installing with pip user base..."
+    python3 -m pip install --user platformio
+    export PATH="$HOME/.local/bin:$PATH"
+  fi
+  pio run -e esp32-s3-devkitc-1-n32r16v
 elif [[ -f "CMakeLists.txt" ]] && [[ -d "main" || -d "components" ]]; then
   echo "Detected ESP-IDF-style layout; run idf.py build here (future)."
 else
