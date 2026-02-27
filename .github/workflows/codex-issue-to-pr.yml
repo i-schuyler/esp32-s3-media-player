@@ -2,7 +2,10 @@ name: Codex Issue to PR
 
 on:
   issues:
-    types: [opened]
+    types: [opened, reopened]
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -16,8 +19,38 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+- name: Comment 'Codex started…' on issue
+  uses: actions/github-script@v7
+  with:
+    github-token: ${{ github.token }}
+    script: |
+      // For issue_comment events, only proceed if the comment is exactly "/retry"
+      if (context.eventName === 'issue_comment') {
+        const body = ((context.payload.comment && context.payload.comment.body) || '').trim();
+        if (body !== '/retry') {
+          core.info(`Ignoring issue_comment body: ${body}`);
+          return;
+        }
+      }
+
+      const issueNumber = context.payload.issue.number;
+      const owner = context.repo.owner;
+      const repo = context.repo.repo;
+
+      await github.rest.issues.createComment({
+        owner,
+        repo,
+        issue_number: issueNumber,
+        body: 'Codex started…',
+      });
+
+
       # Codex creates a PR implementing the issue with minimal, test-gated changes.
       - name: Codex draft PR from issue
+        if: |
+          github.event_name == 'issues' ||
+          (github.event_name == 'issue_comment' && github.event.comment.body == '/retry') ||
+          github.event_name == 'workflow_dispatch'
         uses: openai/codex-action@v1
         with:
           # Keep the agent focused and safe.

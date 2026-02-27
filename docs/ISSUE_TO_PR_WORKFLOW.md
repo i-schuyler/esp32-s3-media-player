@@ -34,3 +34,9 @@ gh secret set OPENAI_API_KEY
 
 ## Notification
 On success, the workflow comments on the originating issue with `PR created: <link>`.
+
+## Retry
+Comment `/retry` on the issue to re-run the Issue→PR workflow.
+
+## Status comment
+On trigger, the workflow immediately comments `Codex started…` on the issue.
