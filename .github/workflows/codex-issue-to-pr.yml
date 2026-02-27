@@ -73,7 +73,7 @@ jobs:
             4) Ensure the PR will pass policy-gates in CI.
 
             If you cannot safely implement without more info, comment a concise question on the Issue and stop.
-          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
 
       - name: Find created PR and comment on the issue
         if: |
