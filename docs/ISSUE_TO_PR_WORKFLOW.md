@@ -31,6 +31,7 @@ gh secret set OPENAI_API_KEY
 
 ## Notes
 - If you later prefer OAuth/Codex subscription instead of an API key, we can adjust the workflow.
+- After each merged PR, prepend the corresponding entry in `CHANGELOG.md` and create a matching release tag.
 
 ## Notification
 On success, the workflow comments on the originating issue with `PR created: <link>`.

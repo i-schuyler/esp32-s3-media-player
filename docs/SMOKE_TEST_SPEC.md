@@ -53,3 +53,11 @@ Manual verification (phone VLC or curl from laptop):
 
 ## Optional: play 2s clip (future local playback)
 This is a placeholder until we add local audio-out. For now, streaming playback on phone is the test.
+
+## OTA web update (manual)
+Manual verification:
+- Open `http://192.168.4.1/ota`.
+- Upload a valid `firmware.bin` for `esp32-s3-devkitc-1-n32r16v`.
+- Expect browser upload progress updates and clear status text.
+- Success path: status indicates success and device reboots.
+- Failure path (interrupt upload/network): status indicates failure/aborted and app remains reachable after retry.

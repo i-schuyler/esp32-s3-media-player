@@ -20,3 +20,7 @@ Automation MUST stop and ask for human input when:
 - breaking=yes
 - unknown hardware assumptions
 - flaky CI or non-deterministic test failures
+
+## Release hygiene (required after merge)
+- Every merged PR must update `CHANGELOG.md` (prepend order; newest entry first).
+- After merging, create and push a release tag that matches the changelog entry.

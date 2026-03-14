@@ -1,27 +1,54 @@
-# ESP32-S3 Media Player (automation-first)
+# ESP32-S3 Media Server
 
-Goal: an ESP32-S3 device that serves files from microSD over a local Wi‑Fi AP and enables playback/viewing on a phone
-without accumulating storage on the phone (prefer streaming via HTTP Range requests).
+ESP32-S3 Media Server is firmware for `esp32-s3-devkitc-1-n32r16v` that:
+- starts a local Wi-Fi AP and serves a browser UI,
+- mounts and browses microSD media files,
+- supports upload/download + HTTP Range streaming for mobile players (VLC),
+- provides a web OTA firmware update flow with progress/status reporting.
 
-This repo is set up for **Pipeline A**:
-spec → issues → PRs → CI gates → (optional) auto-merge for low-risk changes.
+## Build and Upload (`esp32-s3-devkitc-1-n32r16v`)
+1. Install PlatformIO Core (CLI) and Python 3.
+2. Build:
+```bash
+pio run -e esp32-s3-devkitc-1-n32r16v
+```
+3. Upload firmware:
+```bash
+pio run -e esp32-s3-devkitc-1-n32r16v -t upload
+```
+4. Optional serial monitor:
+```bash
+pio device monitor -b 115200
+```
 
-## Quick start (repo bootstrap)
-1. Unzip the bootstrap bundle into the repo root.
-2. Commit and push.
-3. Create labels (script provided).
+## Wiring
+### DS3231 RTC (I2C)
+- RTC **GND** → Row 1 Right (GND)
+- RTC **VCC** → Row 21 Right (3V3)
+- RTC **SCL** → Row 8 Right (**IO9**)
+- RTC **SDA** → Row 11 Right (**IO8**)
+### MicroSD (SPI)
+- SD **GND** → Row 1 Right (GND)
+- SD **VCC** → Row 21 Right (3V3)
+- SD **CS** → Row 4 Right (**IO13**)
+- SD **SCK** → Row 5 Right (**IO12**)
+- SD **MISO** → Row 6 Right (**IO11**)
+- SD **MOSI** → Row 7 Right (**IO10**)
 
-See:
+## OTA Web Update
+- Open `http://192.168.4.1/ota`.
+- Upload a board-matching `firmware.bin`.
+- The page reports upload progress and OTA status.
+- On success, the device reports completion and reboots.
+- On interruption/error, OTA failure is reported and normal app flow continues.
+
+## Validation references
 - `ACCEPTANCE.md` for v0.1 binary checks
-- `.github/` for PR template, issue template, and CI gate
-- `docs/` for the automation policy
+- `docs/SMOKE_TEST_SPEC.md` for smoke verification details
 
-## Streaming approach
-Preferred: HTTP streaming with `Accept-Ranges: bytes` and correct `206 Partial Content` responses to Range requests.
-Most mobile players will only buffer small portions when Range is supported.
+## Changelog and releases
+- Update `CHANGELOG.md` in prepend order (newest entry first) for each merged PR.
+- Tag a release that matches the changelog update after merge.
 
 ## License
 MIT (see `LICENSE`).
-
-## Issue → PR automation
-See `docs/ISSUE_TO_PR_WORKFLOW.md` and `.github/workflows/codex-issue-to-pr.yml`.
