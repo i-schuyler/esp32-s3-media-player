@@ -2,15 +2,32 @@
 #include <FS.h>
 #include <SD.h>
 #include <SPI.h>
+#include <Update.h>
 #include <WebServer.h>
 #include <WiFi.h>
 
 namespace {
 WebServer server(80);
 
-constexpr uint8_t kSdCsPin = 10;
+constexpr uint8_t kSdCsPin = 13;
+constexpr uint8_t kSdSckPin = 12;
+constexpr uint8_t kSdMisoPin = 11;
+constexpr uint8_t kSdMosiPin = 10;
 constexpr const char* kDefaultApPassword = "12345678";
 constexpr size_t kChunkSize = 2048;
+
+struct OtaStatus {
+  bool inProgress = false;
+  bool success = false;
+  bool hasResult = false;
+  size_t received = 0;
+  size_t expected = 0;
+  String message = F("idle");
+};
+
+OtaStatus gOtaStatus;
+bool gOtaRestartPending = false;
+unsigned long gOtaRestartAtMs = 0;
 
 String htmlEscape(const String& in) {
   String out;
@@ -21,6 +38,20 @@ String htmlEscape(const String& in) {
     else if (c == '<') out += F("&lt;");
     else if (c == '>') out += F("&gt;");
     else if (c == '"') out += F("&quot;");
+    else out += c;
+  }
+  return out;
+}
+
+String jsonEscape(const String& in) {
+  String out;
+  out.reserve(in.length() + 8);
+  for (size_t i = 0; i < in.length(); ++i) {
+    const char c = in.charAt(i);
+    if (c == '"') out += F("\\\"");
+    else if (c == '\\') out += F("\\\\");
+    else if (c == '\n') out += F("\\n");
+    else if (c == '\r') out += F("\\r");
     else out += c;
   }
   return out;
@@ -48,9 +79,10 @@ void handleRoot() {
   String body;
   body.reserve(512);
   body += F("<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>");
-  body += F("<title>ESP32 Media</title></head><body>");
-  body += F("<h1>ESP32 Media</h1>");
+  body += F("<title>ESP32-S3 Media Server</title></head><body>");
+  body += F("<h1>ESP32-S3 Media Server</h1>");
   body += F("<p><a href='/files'>Open file browser</a></p>");
+  body += F("<p><a href='/ota'>Firmware update (OTA)</a></p>");
   body += F("</body></html>");
   server.send(200, F("text/html"), body);
 }
@@ -91,6 +123,7 @@ void handleFilesPage() {
   body.reserve(4096);
   body += F("<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>");
   body += F("<title>ESP32 Files</title></head><body><h1>SD Browser</h1>");
+  body += F("<p><a href='/ota'>Open OTA firmware updater</a></p>");
   body += F("<form method='POST' action='/upload' enctype='multipart/form-data'>");
   body += F("<input type='file' name='file'/>");
   body += F("<button type='submit'>Upload</button></form>");
@@ -126,6 +159,45 @@ void handleListApi() {
 
   Serial.println(F("SD: LIST OK"));
   server.send(200, F("application/json"), json);
+}
+
+void handleOtaStatusApi() {
+  String json = "{";
+  json += "\"in_progress\":";
+  json += gOtaStatus.inProgress ? "true" : "false";
+  json += ",\"success\":";
+  json += gOtaStatus.success ? "true" : "false";
+  json += ",\"has_result\":";
+  json += gOtaStatus.hasResult ? "true" : "false";
+  json += ",\"received\":";
+  json += String(static_cast<unsigned long>(gOtaStatus.received));
+  json += ",\"expected\":";
+  json += String(static_cast<unsigned long>(gOtaStatus.expected));
+  json += ",\"message\":\"";
+  json += jsonEscape(gOtaStatus.message);
+  json += "\"}";
+  server.send(200, F("application/json"), json);
+}
+
+void handleOtaPage() {
+  String body;
+  body.reserve(2600);
+  body += F("<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>");
+  body += F("<title>OTA Update</title></head><body>");
+  body += F("<h1>OTA Firmware Update</h1>");
+  body += F("<p>Upload a valid firmware.bin built for this board.</p>");
+  body += F("<form id='otaForm' method='POST' action='/ota' enctype='multipart/form-data'>");
+  body += F("<input id='fw' type='file' name='firmware' accept='.bin,application/octet-stream' required/>");
+  body += F("<button type='submit'>Start OTA</button></form>");
+  body += F("<p id='uploadProgress'>Upload progress: 0%</p>");
+  body += F("<p id='status'>Status: idle</p>");
+  body += F("<p><a href='/'>Back</a></p>");
+  body += F("<script>");
+  body += F("const f=document.getElementById('otaForm');const p=document.getElementById('uploadProgress');const s=document.getElementById('status');");
+  body += F("f.addEventListener('submit',function(e){e.preventDefault();const file=document.getElementById('fw').files[0];if(!file){s.textContent='Status: select firmware.bin first';return;}const data=new FormData();data.append('firmware',file);const x=new XMLHttpRequest();x.open('POST','/ota',true);x.upload.onprogress=function(ev){if(ev.lengthComputable){const pct=Math.round((ev.loaded/ev.total)*100);p.textContent='Upload progress: '+pct+'%';s.textContent='Status: uploading...';}};x.onreadystatechange=function(){if(x.readyState===4){s.textContent='Status: '+x.responseText;}};x.onerror=function(){s.textContent='Status: upload failed (network error)';};x.send(data);});");
+  body += F("setInterval(function(){fetch('/api/ota/status').then(r=>r.json()).then(j=>{let msg='Status: '+j.message;if(j.in_progress){msg+=' ('+j.received+' bytes)';}s.textContent=msg;}).catch(()=>{});},1000);");
+  body += F("</script></body></html>");
+  server.send(200, F("text/html"), body);
 }
 
 void handleDownload() {
@@ -231,6 +303,74 @@ void handleUploadDone() {
   server.send(200, F("text/plain"), F("upload complete"));
 }
 
+void handleOtaDone() {
+  if (gOtaStatus.success) {
+    server.send(200, F("text/plain"), gOtaStatus.message);
+  } else {
+    server.send(500, F("text/plain"), gOtaStatus.message);
+  }
+}
+
+void handleOtaChunk() {
+  HTTPUpload& upload = server.upload();
+  if (upload.status == UPLOAD_FILE_START) {
+    gOtaStatus.inProgress = true;
+    gOtaStatus.success = false;
+    gOtaStatus.hasResult = false;
+    gOtaStatus.received = 0;
+    gOtaStatus.expected = static_cast<size_t>(upload.totalSize);
+    gOtaStatus.message = F("starting OTA update");
+    gOtaRestartPending = false;
+    if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+      gOtaStatus.inProgress = false;
+      gOtaStatus.hasResult = true;
+      gOtaStatus.message = F("OTA failed: unable to start update");
+      Serial.println(F("OTA: BEGIN FAILED"));
+    }
+  } else if (upload.status == UPLOAD_FILE_WRITE) {
+    if (!gOtaStatus.inProgress) return;
+    const size_t written = Update.write(upload.buf, upload.currentSize);
+    if (written != upload.currentSize) {
+      Update.abort();
+      gOtaStatus.inProgress = false;
+      gOtaStatus.hasResult = true;
+      gOtaStatus.message = F("OTA failed: write error");
+      Serial.println(F("OTA: WRITE FAILED"));
+      return;
+    }
+    gOtaStatus.received += upload.currentSize;
+    if (gOtaStatus.expected > 0) {
+      const unsigned long pct = static_cast<unsigned long>((gOtaStatus.received * 100UL) / gOtaStatus.expected);
+      gOtaStatus.message = "uploading firmware (" + String(pct) + "%)";
+    } else {
+      gOtaStatus.message = F("uploading firmware");
+    }
+  } else if (upload.status == UPLOAD_FILE_END) {
+    if (!gOtaStatus.inProgress) return;
+    if (Update.end(true)) {
+      gOtaStatus.inProgress = false;
+      gOtaStatus.success = true;
+      gOtaStatus.hasResult = true;
+      gOtaStatus.message = F("OTA successful. Device will reboot.");
+      gOtaRestartPending = true;
+      gOtaRestartAtMs = millis() + 1500;
+      Serial.println(F("OTA: SUCCESS"));
+    } else {
+      gOtaStatus.inProgress = false;
+      gOtaStatus.hasResult = true;
+      gOtaStatus.message = String(F("OTA failed: ")) + Update.errorString();
+      Serial.println(F("OTA: END FAILED"));
+    }
+  } else if (upload.status == UPLOAD_FILE_ABORTED) {
+    Update.abort();
+    gOtaStatus.inProgress = false;
+    gOtaStatus.success = false;
+    gOtaStatus.hasResult = true;
+    gOtaStatus.message = F("OTA failed: upload interrupted or aborted");
+    Serial.println(F("OTA: ABORTED"));
+  }
+}
+
 void handleUploadChunk() {
   HTTPUpload& upload = server.upload();
   static File uploadFile;
@@ -263,13 +403,17 @@ void configureRoutes() {
   server.on("/", HTTP_GET, handleRoot);
   server.on("/files", HTTP_GET, handleFilesPage);
   server.on("/api/list", HTTP_GET, handleListApi);
+  server.on("/api/ota/status", HTTP_GET, handleOtaStatusApi);
   server.on("/download", HTTP_GET, handleDownload);
   server.on("/stream", HTTP_GET, handleStream);
   server.on("/upload", HTTP_POST, handleUploadDone, handleUploadChunk);
+  server.on("/ota", HTTP_GET, handleOtaPage);
+  server.on("/ota", HTTP_POST, handleOtaDone, handleOtaChunk);
   server.onNotFound([]() { server.send(404, F("text/plain"), F("not found")); });
 }
 
 bool mountSd() {
+  SPI.begin(kSdSckPin, kSdMisoPin, kSdMosiPin, kSdCsPin);
   if (!SD.begin(kSdCsPin)) {
     Serial.println(F("SD: MOUNT FAILED"));
     return false;
@@ -311,5 +455,8 @@ void setup() {
 }
 
 void loop() {
+  if (gOtaRestartPending && static_cast<long>(millis() - gOtaRestartAtMs) >= 0) {
+    ESP.restart();
+  }
   server.handleClient();
 }
