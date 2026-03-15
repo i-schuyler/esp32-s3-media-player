@@ -29,6 +29,22 @@ OtaStatus gOtaStatus;
 bool gOtaRestartPending = false;
 unsigned long gOtaRestartAtMs = 0;
 
+enum class SdFailureStage {
+  kOk,
+  kInitBusFailure,
+  kCardCommFailure,
+  kMountFsFailure,
+  kReadRootFailure,
+};
+
+struct SdStatus {
+  bool available = false;
+  SdFailureStage stage = SdFailureStage::kInitBusFailure;
+  String detail;
+};
+
+SdStatus gSdStatus;
+
 String htmlEscape(const String& in) {
   String out;
   out.reserve(in.length());
@@ -75,6 +91,73 @@ String sanitizePath(const String& raw) {
   return path;
 }
 
+String sdStageCode(SdFailureStage stage) {
+  switch (stage) {
+    case SdFailureStage::kOk:
+      return F("ok");
+    case SdFailureStage::kInitBusFailure:
+      return F("init_bus_failure");
+    case SdFailureStage::kCardCommFailure:
+      return F("card_comm_failure");
+    case SdFailureStage::kMountFsFailure:
+      return F("mount_fs_failure");
+    case SdFailureStage::kReadRootFailure:
+      return F("read_root_failure");
+  }
+  return F("unknown");
+}
+
+String sdStageTitle(SdFailureStage stage) {
+  switch (stage) {
+    case SdFailureStage::kOk:
+      return F("SD is ready");
+    case SdFailureStage::kInitBusFailure:
+      return F("SD init/pin bus failed");
+    case SdFailureStage::kCardCommFailure:
+      return F("SD card not detected or not communicating");
+    case SdFailureStage::kMountFsFailure:
+      return F("SD mount/filesystem failed");
+    case SdFailureStage::kReadRootFailure:
+      return F("SD root read/open failed");
+  }
+  return F("SD unavailable");
+}
+
+String sdStageGuidance(SdFailureStage stage) {
+  switch (stage) {
+    case SdFailureStage::kOk:
+      return F("No action needed.");
+    case SdFailureStage::kInitBusFailure:
+      return F("Check wiring and pins: CS=IO13, SCK=IO12, MISO=IO11, MOSI=IO10. Confirm 3.3V power and GND.");
+    case SdFailureStage::kCardCommFailure:
+      return F("Re-seat or replace the card, confirm FAT32 formatting, and verify the card works on another device.");
+    case SdFailureStage::kMountFsFailure:
+      return F("Use a supported card/format (FAT32 recommended) and reformat the card if needed.");
+    case SdFailureStage::kReadRootFailure:
+      return F("Card mounted but root could not be listed. Reboot device, re-seat card, and retry with a known-good card.");
+  }
+  return F("Inspect SD wiring and card format.");
+}
+
+void setSdStatus(SdFailureStage stage, bool available, const String& detail) {
+  gSdStatus.stage = stage;
+  gSdStatus.available = available;
+  gSdStatus.detail = detail;
+}
+
+void setSdStatusFromRootReadFailure(const String& detail) {
+  if (!gSdStatus.available) return;
+  setSdStatus(SdFailureStage::kReadRootFailure, false, detail);
+}
+
+void appendSdUnavailableHtml(String& body) {
+  body += F("<p><strong>SD unavailable:</strong> ");
+  body += sdStageTitle(gSdStatus.stage);
+  body += F("</p><p>Next step: ");
+  body += htmlEscape(sdStageGuidance(gSdStatus.stage));
+  body += F("</p><p><a href='/sd-diagnostics'>Open SD diagnostics</a></p>");
+}
+
 void handleRoot() {
   String body;
   body.reserve(512);
@@ -82,6 +165,7 @@ void handleRoot() {
   body += F("<title>ESP32-S3 Media Server</title></head><body>");
   body += F("<h1>ESP32-S3 Media Server</h1>");
   body += F("<p><a href='/files'>Open file browser</a></p>");
+  body += F("<p><a href='/sd-diagnostics'>SD diagnostics</a></p>");
   body += F("<p><a href='/ota'>Firmware update (OTA)</a></p>");
   body += F("</body></html>");
   server.send(200, F("text/html"), body);
@@ -90,7 +174,8 @@ void handleRoot() {
 void appendDirectoryListingHtml(String& body, fs::FS& fs, const char* dirname) {
   File root = fs.open(dirname);
   if (!root || !root.isDirectory()) {
-    body += F("<p>SD root unavailable</p>");
+    setSdStatusFromRootReadFailure(F("root listing failed"));
+    appendSdUnavailableHtml(body);
     return;
   }
 
@@ -123,6 +208,7 @@ void handleFilesPage() {
   body.reserve(4096);
   body += F("<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>");
   body += F("<title>ESP32 Files</title></head><body><h1>SD Browser</h1>");
+  body += F("<p><a href='/sd-diagnostics'>Open SD diagnostics</a></p>");
   body += F("<p><a href='/ota'>Open OTA firmware updater</a></p>");
   body += F("<form method='POST' action='/upload' enctype='multipart/form-data'>");
   body += F("<input type='file' name='file'/>");
@@ -132,10 +218,55 @@ void handleFilesPage() {
   server.send(200, F("text/html"), body);
 }
 
+void handleSdStatusApi() {
+  String json = "{";
+  json += "\"available\":";
+  json += gSdStatus.available ? "true" : "false";
+  json += ",\"stage\":\"";
+  json += sdStageCode(gSdStatus.stage);
+  json += "\",\"title\":\"";
+  json += jsonEscape(sdStageTitle(gSdStatus.stage));
+  json += "\",\"guidance\":\"";
+  json += jsonEscape(sdStageGuidance(gSdStatus.stage));
+  json += "\",\"detail\":\"";
+  json += jsonEscape(gSdStatus.detail);
+  json += "\"}";
+  server.send(200, F("application/json"), json);
+}
+
+void handleSdDiagnosticsPage() {
+  String body;
+  body.reserve(1800);
+  body += F("<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>");
+  body += F("<title>SD diagnostics</title></head><body><h1>SD Diagnostics</h1>");
+  body += F("<p><strong>Status:</strong> ");
+  body += htmlEscape(sdStageTitle(gSdStatus.stage));
+  body += F("</p><p><strong>Failure stage:</strong> ");
+  body += htmlEscape(sdStageCode(gSdStatus.stage));
+  body += F("</p><p><strong>Action:</strong> ");
+  body += htmlEscape(sdStageGuidance(gSdStatus.stage));
+  body += F("</p>");
+  if (gSdStatus.detail.length() > 0) {
+    body += F("<p><strong>Detail:</strong> ");
+    body += htmlEscape(gSdStatus.detail);
+    body += F("</p>");
+  }
+  body += F("<p>Serial logs remain available for deeper debugging.</p>");
+  body += F("<p><a href='/api/sd/status'>View raw JSON status</a></p>");
+  body += F("<p><a href='/files'>Back to file browser</a></p></body></html>");
+  server.send(200, F("text/html"), body);
+}
+
 void handleListApi() {
   File root = SD.open("/");
   if (!root || !root.isDirectory()) {
-    server.send(500, F("application/json"), F("{\"error\":\"sd_root_unavailable\"}"));
+    setSdStatusFromRootReadFailure(F("api list root open failed"));
+    String json = "{\"error\":\"sd_root_unavailable\",\"stage\":\"";
+    json += sdStageCode(gSdStatus.stage);
+    json += "\",\"guidance\":\"";
+    json += jsonEscape(sdStageGuidance(gSdStatus.stage));
+    json += "\"}";
+    server.send(500, F("application/json"), json);
     return;
   }
 
@@ -403,7 +534,9 @@ void configureRoutes() {
   server.on("/", HTTP_GET, handleRoot);
   server.on("/files", HTTP_GET, handleFilesPage);
   server.on("/api/list", HTTP_GET, handleListApi);
+  server.on("/api/sd/status", HTTP_GET, handleSdStatusApi);
   server.on("/api/ota/status", HTTP_GET, handleOtaStatusApi);
+  server.on("/sd-diagnostics", HTTP_GET, handleSdDiagnosticsPage);
   server.on("/download", HTTP_GET, handleDownload);
   server.on("/stream", HTTP_GET, handleStream);
   server.on("/upload", HTTP_POST, handleUploadDone, handleUploadChunk);
@@ -413,18 +546,42 @@ void configureRoutes() {
 }
 
 bool mountSd() {
+  setSdStatus(SdFailureStage::kInitBusFailure, false, F("not initialized"));
   SPI.begin(kSdSckPin, kSdMisoPin, kSdMosiPin, kSdCsPin);
   if (!SD.begin(kSdCsPin)) {
+    const uint8_t cardType = SD.cardType();
+    if (cardType == CARD_NONE) {
+      setSdStatus(SdFailureStage::kCardCommFailure, false, F("card not detected during SD.begin"));
+    } else {
+      setSdStatus(SdFailureStage::kInitBusFailure, false, F("SD.begin failed"));
+    }
     Serial.println(F("SD: MOUNT FAILED"));
+    Serial.printf("SD: DIAG STAGE=%s\n", sdStageCode(gSdStatus.stage).c_str());
     return false;
   }
 
   Serial.println(F("SD: MOUNTED"));
-  File root = SD.open("/");
-  if (root && root.isDirectory()) {
-    Serial.println(F("SD: READ OK"));
-    Serial.println(F("SD: LIST OK"));
+  if (SD.cardType() == CARD_NONE) {
+    setSdStatus(SdFailureStage::kCardCommFailure, false, F("mounted bus but card type is none"));
+    Serial.println(F("SD: TIMEOUT"));
+    Serial.printf("SD: DIAG STAGE=%s\n", sdStageCode(gSdStatus.stage).c_str());
+    return false;
   }
+  if (SD.totalBytes() == 0) {
+    setSdStatus(SdFailureStage::kMountFsFailure, false, F("filesystem size is zero"));
+    Serial.println(F("SD: CRC ERROR"));
+    Serial.printf("SD: DIAG STAGE=%s\n", sdStageCode(gSdStatus.stage).c_str());
+    return false;
+  }
+  File root = SD.open("/");
+  if (!root || !root.isDirectory()) {
+    setSdStatus(SdFailureStage::kReadRootFailure, false, F("root open failed after mount"));
+    Serial.printf("SD: DIAG STAGE=%s\n", sdStageCode(gSdStatus.stage).c_str());
+    return false;
+  }
+  setSdStatus(SdFailureStage::kOk, true, F("mounted and root listed"));
+  Serial.println(F("SD: READ OK"));
+  Serial.println(F("SD: LIST OK"));
   return true;
 }
 
