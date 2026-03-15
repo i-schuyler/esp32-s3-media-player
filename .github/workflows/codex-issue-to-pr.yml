@@ -21,8 +21,7 @@ jobs:
   draft-pr:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+\ \ \ \ \ \ -\ name:\ Checkout\n\ \ \ \ \ \ \ \ uses:\ actions/checkout@v4\n\n\ \ \ \ \ \ -\ name:\ Configure\ git\ identity\ for\ Codex\ commits\n\ \ \ \ \ \ \ \ run:\ \|\n\ \ \ \ \ \ \ \ \ \ git\ config\ --global\ user\.name\ "OpenAI\ Codex"\n\ \ \ \ \ \ \ \ \ \ git\ config\ --global\ user\.email\ "codex@users\.noreply\.github\.com"
 
       - name: Comment 'Codex started…' on issue
         uses: actions/github-script@v7
@@ -92,8 +91,8 @@ jobs:
             const repo = context.repo.repo;
 
             // Search open PRs that mention this issue (by full URL first, then "#<num>").
-            const qUrl = `repo:${owner}/${repo} is:pr is:open ${context.payload.issue.html_url}`;
-            const qHash = `repo:${owner}/${repo} is:pr is:open (#${issueNumber})`;
+            const qUrl = `repo:${owner}/${repo} is:pr ${context.payload.issue.html_url}`;
+            const qHash = `repo:${owner}/${repo} is:pr (#${issueNumber})`;
 
             async function search(q) {
               return await github.rest.search.issuesAndPullRequests({ q, per_page: 5 });
@@ -115,3 +114,4 @@ jobs:
               owner, repo, issue_number: issueNumber,
               body: `PR created: ${pr.html_url}`,
             });
+
