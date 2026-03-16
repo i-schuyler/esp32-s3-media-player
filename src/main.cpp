@@ -22,7 +22,9 @@ struct OtaStatus {
   bool hasResult = false;
   size_t received = 0;
   size_t expected = 0;
+  String stage = F("idle");
   String message = F("idle");
+  String guidance = F("Select firmware.bin built for esp32-s3-devkitc-1-n32r16v.");
 };
 
 OtaStatus gOtaStatus;
@@ -304,15 +306,20 @@ void handleOtaStatusApi() {
   json += String(static_cast<unsigned long>(gOtaStatus.received));
   json += ",\"expected\":";
   json += String(static_cast<unsigned long>(gOtaStatus.expected));
+  json += ",\"stage\":\"";
+  json += jsonEscape(gOtaStatus.stage);
+  json += "\"";
   json += ",\"message\":\"";
   json += jsonEscape(gOtaStatus.message);
+  json += "\",\"guidance\":\"";
+  json += jsonEscape(gOtaStatus.guidance);
   json += "\"}";
   server.send(200, F("application/json"), json);
 }
 
 void handleOtaPage() {
   String body;
-  body.reserve(2600);
+  body.reserve(4600);
   body += F("<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>");
   body += F("<title>OTA Update</title></head><body>");
   body += F("<h1>OTA Firmware Update</h1>");
@@ -321,14 +328,47 @@ void handleOtaPage() {
   body += F("<input id='fw' type='file' name='firmware' accept='.bin,application/octet-stream' required/>");
   body += F("<button type='submit'>Start OTA</button></form>");
   body += F("<p id='uploadProgress'>Upload progress: 0%</p>");
-  body += F("<p id='status'>Status: idle</p>");
+  body += F("<p id='stage'>Stage: idle</p>");
+  body += F("<p id='status'>Status: waiting for upload</p>");
+  body += F("<p id='guidance'>Next step: choose a valid firmware.bin for esp32-s3-devkitc-1-n32r16v.</p>");
   body += F("<p><a href='/'>Back</a></p>");
   body += F("<script>");
-  body += F("const f=document.getElementById('otaForm');const p=document.getElementById('uploadProgress');const s=document.getElementById('status');");
-  body += F("f.addEventListener('submit',function(e){e.preventDefault();const file=document.getElementById('fw').files[0];if(!file){s.textContent='Status: select firmware.bin first';return;}const data=new FormData();data.append('firmware',file);const x=new XMLHttpRequest();x.open('POST','/ota',true);x.upload.onprogress=function(ev){if(ev.lengthComputable){const pct=Math.round((ev.loaded/ev.total)*100);p.textContent='Upload progress: '+pct+'%';s.textContent='Status: uploading...';}};x.onreadystatechange=function(){if(x.readyState===4){s.textContent='Status: '+x.responseText;}};x.onerror=function(){s.textContent='Status: upload failed (network error)';};x.send(data);});");
-  body += F("setInterval(function(){fetch('/api/ota/status').then(r=>r.json()).then(j=>{let msg='Status: '+j.message;if(j.in_progress){msg+=' ('+j.received+' bytes)';}s.textContent=msg;}).catch(()=>{});},1000);");
+  body += F("const f=document.getElementById('otaForm');const p=document.getElementById('uploadProgress');const st=document.getElementById('stage');const s=document.getElementById('status');const g=document.getElementById('guidance');");
+  body += F("function setUi(j){st.textContent='Stage: '+j.stage;let msg='Status: '+j.message;if(j.in_progress){msg+=' ('+j.received+' bytes)';}s.textContent=msg;g.textContent='Next step: '+j.guidance;}");
+  body += F("f.addEventListener('submit',function(e){e.preventDefault();const file=document.getElementById('fw').files[0];if(!file){st.textContent='Stage: failed';s.textContent='Status: select firmware.bin first';g.textContent='Next step: choose firmware.bin then retry.';return;}const data=new FormData();data.append('firmware',file);const x=new XMLHttpRequest();x.open('POST','/ota',true);st.textContent='Stage: upload';s.textContent='Status: starting upload';g.textContent='Next step: keep this page open until a final result is shown.';x.upload.onprogress=function(ev){if(ev.lengthComputable){const pct=Math.round((ev.loaded/ev.total)*100);p.textContent='Upload progress: '+pct+'%';if(pct>=100){st.textContent='Stage: validate_apply';s.textContent='Status: upload complete; validating and applying firmware';}}};x.onreadystatechange=function(){if(x.readyState===4&&x.status>=400){s.textContent='Status: '+x.responseText;}};x.onerror=function(){st.textContent='Stage: failed';s.textContent='Status: upload failed (network error)';g.textContent='Next step: keep device powered, reconnect to AP, and retry.';};x.send(data);});");
+  body += F("setInterval(function(){fetch('/api/ota/status').then(r=>r.json()).then(setUi).catch(()=>{});},800);");
   body += F("</script></body></html>");
   server.send(200, F("text/html"), body);
+}
+
+String otaGuidanceForUpdateError(uint8_t error) {
+  switch (error) {
+    case UPDATE_ERROR_READ:
+      return F("The firmware file may be invalid/corrupted or for the wrong board. Rebuild/select firmware.bin for esp32-s3-devkitc-1-n32r16v and retry.");
+    case UPDATE_ERROR_SPACE:
+      return F("Firmware image is too large for the OTA partition. Build for esp32-s3-devkitc-1-n32r16v and verify partition settings.");
+    case UPDATE_ERROR_MAGIC_BYTE:
+      return F("Selected file is not a valid ESP32 app image. Use firmware.bin from a successful build.");
+    case UPDATE_ERROR_MD5:
+      return F("Firmware validation failed. Re-download/rebuild firmware.bin and retry.");
+    case UPDATE_ERROR_STREAM:
+      return F("Upload stream interrupted. Keep device powered, keep browser tab open, and retry on a stable connection.");
+    case UPDATE_ERROR_WRITE:
+    case UPDATE_ERROR_ERASE:
+      return F("Flash write/erase failed. Reboot device and retry. If repeated, reflash over USB to recover.");
+    case UPDATE_ERROR_ACTIVATE:
+      return F("Firmware written but activation failed. Reboot and retry with a known-good firmware.bin.");
+    case UPDATE_ERROR_NO_PARTITION:
+      return F("No OTA partition available. Verify build target and partition table for esp32-s3-devkitc-1-n32r16v.");
+    case UPDATE_ERROR_SIZE:
+      return F("Upload size is invalid for OTA. Rebuild firmware.bin and retry.");
+    case UPDATE_ERROR_ABORT:
+      return F("OTA was aborted. Retry the update and keep power/network stable.");
+    case UPDATE_ERROR_BAD_ARGUMENT:
+      return F("Invalid OTA request. Retry from the OTA page using firmware.bin.");
+    default:
+      return F("Retry with a known-good firmware.bin. If it still fails, capture serial logs for deeper diagnostics.");
+  }
 }
 
 void handleDownload() {
@@ -450,12 +490,17 @@ void handleOtaChunk() {
     gOtaStatus.hasResult = false;
     gOtaStatus.received = 0;
     gOtaStatus.expected = static_cast<size_t>(upload.totalSize);
-    gOtaStatus.message = F("starting OTA update");
+    gOtaStatus.stage = F("upload");
+    gOtaStatus.message = F("starting OTA upload");
+    gOtaStatus.guidance = F("Keep this page open while upload, validation, and apply complete.");
     gOtaRestartPending = false;
-    if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+    if (!Update.begin(UPDATE_SIZE_UNKNOWN, U_FLASH)) {
       gOtaStatus.inProgress = false;
+      gOtaStatus.success = false;
       gOtaStatus.hasResult = true;
+      gOtaStatus.stage = F("failed");
       gOtaStatus.message = F("OTA failed: unable to start update");
+      gOtaStatus.guidance = F("Reboot and retry using firmware.bin built for esp32-s3-devkitc-1-n32r16v.");
       Serial.println(F("OTA: BEGIN FAILED"));
     }
   } else if (upload.status == UPLOAD_FILE_WRITE) {
@@ -464,40 +509,63 @@ void handleOtaChunk() {
     if (written != upload.currentSize) {
       Update.abort();
       gOtaStatus.inProgress = false;
+      gOtaStatus.success = false;
       gOtaStatus.hasResult = true;
+      gOtaStatus.stage = F("failed");
       gOtaStatus.message = F("OTA failed: write error");
+      gOtaStatus.guidance = F("Reboot and retry. If repeated, reflash over USB and verify firmware.bin target.");
       Serial.println(F("OTA: WRITE FAILED"));
       return;
     }
     gOtaStatus.received += upload.currentSize;
     if (gOtaStatus.expected > 0) {
       const unsigned long pct = static_cast<unsigned long>((gOtaStatus.received * 100UL) / gOtaStatus.expected);
-      gOtaStatus.message = "uploading firmware (" + String(pct) + "%)";
+      if (pct >= 100) {
+        gOtaStatus.stage = F("validate_apply");
+        gOtaStatus.message = F("upload complete, validating and applying firmware");
+        gOtaStatus.guidance = F("Wait for final success/failure result. Do not power off.");
+      } else {
+        gOtaStatus.stage = F("upload");
+        gOtaStatus.message = "uploading firmware (" + String(pct) + "%)";
+      }
     } else {
+      gOtaStatus.stage = F("upload");
       gOtaStatus.message = F("uploading firmware");
     }
   } else if (upload.status == UPLOAD_FILE_END) {
     if (!gOtaStatus.inProgress) return;
+    gOtaStatus.stage = F("validate_apply");
+    gOtaStatus.message = F("upload complete, validating and applying firmware");
+    gOtaStatus.guidance = F("Wait for final OTA result.");
     if (Update.end(true)) {
       gOtaStatus.inProgress = false;
       gOtaStatus.success = true;
       gOtaStatus.hasResult = true;
+      gOtaStatus.stage = F("success");
       gOtaStatus.message = F("OTA successful. Device will reboot.");
+      gOtaStatus.guidance = F("Wait for reboot, reconnect to ESP32-MEDIA AP, then verify app version.");
       gOtaRestartPending = true;
       gOtaRestartAtMs = millis() + 1500;
       Serial.println(F("OTA: SUCCESS"));
     } else {
+      const uint8_t error = Update.getError();
       gOtaStatus.inProgress = false;
+      gOtaStatus.success = false;
       gOtaStatus.hasResult = true;
-      gOtaStatus.message = String(F("OTA failed: ")) + Update.errorString();
+      gOtaStatus.stage = F("failed");
+      gOtaStatus.message = String(F("OTA failed during validation/apply: ")) + Update.errorString();
+      gOtaStatus.guidance = otaGuidanceForUpdateError(error);
       Serial.println(F("OTA: END FAILED"));
+      Serial.printf("OTA: ERROR CODE=%u\n", static_cast<unsigned>(error));
     }
   } else if (upload.status == UPLOAD_FILE_ABORTED) {
     Update.abort();
     gOtaStatus.inProgress = false;
     gOtaStatus.success = false;
     gOtaStatus.hasResult = true;
+    gOtaStatus.stage = F("failed");
     gOtaStatus.message = F("OTA failed: upload interrupted or aborted");
+    gOtaStatus.guidance = F("Keep device powered, reconnect, and retry OTA with a stable network.");
     Serial.println(F("OTA: ABORTED"));
   }
 }

@@ -12,6 +12,28 @@
 - PR: <url>
 - Issue: <url>
 
+## [v0.1.4] - 2026-03-16
+
+### Added
+
+* Issue #18 implementation plan mapping OTA diagnostics scope to acceptance/smoke checks.
+* OTA browser-visible stage field and guidance field in status API.
+
+### Changed
+
+* OTA page now distinguishes upload progress from validate/apply and final result stages.
+* OTA UI now shows actionable next steps for recoverable failure conditions.
+
+### Fixed
+
+* Reduced misleading OTA UX where 100% upload could appear complete before validation/apply failed.
+* Added explicit handling guidance for `Flash Read Failed` style OTA outcomes.
+
+### Notes
+
+* PR:
+* Issue: https://github.com/i-schuyler/esp32-s3-media-player/issues/18
+
 ## [v0.1.3] - 2026-03-16
 
 ### Added
