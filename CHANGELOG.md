@@ -23,7 +23,6 @@
 ### Changed
 
 * PR template now includes `VERSION_BUMP` and `RELEASE_VERSION` metadata fields.
-* CI PR policy-gate checks now validate `NEEDS_HIL: no`, version metadata fields, and changelog header presence for declared releases.
 * README/docs now link to quick start and release/pin policy guidance.
 
 ### Fixed

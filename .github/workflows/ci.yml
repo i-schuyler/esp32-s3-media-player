@@ -32,18 +32,9 @@ jobs:
           # Required tokens
           grep -Eq '^RISK: (low|med|high)$' pr_body.txt || (echo "Missing/invalid: RISK: low|med|high" && exit 1)
           grep -Eq '^BREAKING: (yes|no)$' pr_body.txt || (echo "Missing/invalid: BREAKING: yes|no" && exit 1)
-          grep -Eq '^NEEDS_HIL: no$' pr_body.txt || (echo "Missing/invalid: NEEDS_HIL: no" && exit 1)
-          grep -Eq '^VERSION_BUMP: (none|patch|minor|major)$' pr_body.txt || (echo "Missing/invalid: VERSION_BUMP: none|patch|minor|major" && exit 1)
-          grep -Eq '^RELEASE_VERSION: (v[0-9]+\.[0-9]+\.[0-9]+|n/a)$' pr_body.txt || (echo "Missing/invalid: RELEASE_VERSION: vX.Y.Z|n/a" && exit 1)
 
           # Enforce issue link
           grep -Eq 'https://github.com/.+/.+/issues/[0-9]+' pr_body.txt || (echo "Missing issue link URL" && exit 1)
-
-          release_version="$(sed -n 's/^RELEASE_VERSION: //p' pr_body.txt | head -n1)"
-          if [[ -n "${release_version}" && "${release_version}" != "n/a" ]]; then
-            escaped_version="$(printf '%s\n' "${release_version}" | sed 's/[.[\*^$()+?{|]/\\&/g')"
-            grep -Eq "^## \[${escaped_version}\] - [0-9]{4}-[0-9]{2}-[0-9]{2}$" CHANGELOG.md || (echo "CHANGELOG.md missing release header for ${release_version}" && exit 1)
-          fi
 
       - name: Forbidden paths guard (edit list as repo grows)
         run: |

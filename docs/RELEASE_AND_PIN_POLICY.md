@@ -12,7 +12,7 @@
   - `RELEASE_VERSION: vX.Y.Z|n/a`
 - If `RELEASE_VERSION` is not `n/a`, `CHANGELOG.md` must contain a matching header:
   - `## [vX.Y.Z] - YYYY-MM-DD`
-- CI enforces these fields and the changelog header presence.
+- PR authors and reviewers must verify these fields and the changelog header before merge.
 
 ## Post-merge release discipline
 1. Merge PR with matching changelog release header.

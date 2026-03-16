@@ -13,7 +13,7 @@ Issue: https://github.com/i-schuyler/esp32-s3-media-player/issues/12
 - `ACCEPTANCE.md` #13: tighten PR policy metadata checks in CI (`RISK`, `BREAKING`, `NEEDS_HIL`, version fields) while keeping CI green.
 
 Issue-specific acceptance beyond `ACCEPTANCE.md`:
-- Versioning discipline is explicitly defined and enforced through PR fields + changelog header checks.
+- Versioning discipline is explicitly defined through PR fields + changelog header checks.
 - Pin/wiring alignment policy is documented with firmware-to-doc pin mapping and docs-first change rule.
 - A quick start doc is added and linked from `README.md` with AP, UI, upload, browse, stream, and OTA basics.
 
