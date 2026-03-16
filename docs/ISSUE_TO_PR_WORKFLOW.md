@@ -17,6 +17,8 @@ Goal: your only input is creating a GitHub Issue. A workflow then asks Codex to 
 ## Safety gates
 - PRs must pass `.github/workflows/ci.yml` policy gates.
 - PR template must include:
+  - `VERSION_BUMP: ...`
+  - `RELEASE_VERSION: ...`
   - `RISK: ...`
   - `BREAKING: ...`
   - `NEEDS_HIL: no` (until HIL runner exists)
