@@ -29,6 +29,12 @@ It is intentionally simple so it can be executed manually today and automated la
 - `^SD: TIMEOUT`
 - `^SD: CRC ERROR`
 
+Manual browser diagnostics check when SD is unavailable:
+- Open `http://192.168.4.1/files`.
+- Expect a user-friendly SD status and next-step guidance (not only a generic unavailable message).
+- Open `http://192.168.4.1/sd-diagnostics`.
+- Expect stage-specific status + actionable troubleshooting guidance.
+
 ## RTC read
 **Pass regex:**
 - `^RTC: READ OK`
