@@ -5,6 +5,7 @@
 #include <Update.h>
 #include <WebServer.h>
 #include <WiFi.h>
+#include <cstring>
 
 namespace {
 WebServer server(80);
@@ -13,6 +14,9 @@ constexpr uint8_t kSdCsPin = 13;
 constexpr uint8_t kSdSckPin = 12;
 constexpr uint8_t kSdMisoPin = 11;
 constexpr uint8_t kSdMosiPin = 10;
+constexpr uint32_t kSdSpiHz = 4000000;
+constexpr const char* kSdMountPoint = "/sd";
+constexpr const char* kSdFormatConfirmToken = "FORMAT";
 constexpr const char* kDefaultApPassword = "12345678";
 constexpr size_t kChunkSize = 2048;
 
@@ -46,6 +50,17 @@ struct SdStatus {
 };
 
 SdStatus gSdStatus;
+
+struct SdFormatStatus {
+  bool inProgress = false;
+  bool success = false;
+  bool hasResult = false;
+  String stage = F("idle");
+  String message = F("idle");
+  String guidance = F("Type FORMAT and confirm to erase all files on the SD card.");
+};
+
+SdFormatStatus gSdFormatStatus;
 
 String htmlEscape(const String& in) {
   String out;
@@ -152,6 +167,37 @@ void setSdStatusFromRootReadFailure(const String& detail) {
   setSdStatus(SdFailureStage::kReadRootFailure, false, detail);
 }
 
+void setSdFormatStatus(const String& stage, const String& message, const String& guidance, bool inProgress, bool success, bool hasResult) {
+  gSdFormatStatus.stage = stage;
+  gSdFormatStatus.message = message;
+  gSdFormatStatus.guidance = guidance;
+  gSdFormatStatus.inProgress = inProgress;
+  gSdFormatStatus.success = success;
+  gSdFormatStatus.hasResult = hasResult;
+}
+
+String sdFormatStatusJson() {
+  String json = "{";
+  json += "\"in_progress\":";
+  json += gSdFormatStatus.inProgress ? "true" : "false";
+  json += ",\"success\":";
+  json += gSdFormatStatus.success ? "true" : "false";
+  json += ",\"has_result\":";
+  json += gSdFormatStatus.hasResult ? "true" : "false";
+  json += ",\"stage\":\"";
+  json += jsonEscape(gSdFormatStatus.stage);
+  json += "\",\"message\":\"";
+  json += jsonEscape(gSdFormatStatus.message);
+  json += "\",\"guidance\":\"";
+  json += jsonEscape(gSdFormatStatus.guidance);
+  json += "\",\"sd_available\":";
+  json += gSdStatus.available ? "true" : "false";
+  json += ",\"sd_stage\":\"";
+  json += jsonEscape(sdStageCode(gSdStatus.stage));
+  json += "\"}";
+  return json;
+}
+
 void appendSdUnavailableHtml(String& body) {
   body += F("<p><strong>SD unavailable:</strong> ");
   body += sdStageTitle(gSdStatus.stage);
@@ -207,7 +253,7 @@ void appendDirectoryListingHtml(String& body, fs::FS& fs, const char* dirname) {
 
 void handleFilesPage() {
   String body;
-  body.reserve(4096);
+  body.reserve(7600);
   body += F("<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>");
   body += F("<title>ESP32 Files</title></head><body><h1>SD Browser</h1>");
   body += F("<p><a href='/sd-diagnostics'>Open SD diagnostics</a></p>");
@@ -216,6 +262,21 @@ void handleFilesPage() {
   body += F("<input type='file' name='file'/>");
   body += F("<button type='submit'>Upload</button></form>");
   appendDirectoryListingHtml(body, SD, "/");
+  body += F("<hr><h2>Danger Zone: Format SD card (destructive)</h2>");
+  body += F("<p><strong>Warning:</strong> formatting will permanently erase all files on the SD card.</p>");
+  body += F("<p>Status: <span id='fmtStage'>idle</span></p>");
+  body += F("<p>Message: <span id='fmtMessage'>Type FORMAT and confirm to start.</span></p>");
+  body += F("<p>Next step: <span id='fmtGuidance'>Use a sacrificial card and verify backups before continuing.</span></p>");
+  body += F("<form id='fmtForm'>");
+  body += F("<label><input id='fmtCheckbox' type='checkbox' required/> I understand all SD files will be erased.</label><br/>");
+  body += F("<label>Type <code>FORMAT</code>: <input id='fmtToken' type='text' name='confirm' required autocomplete='off'/></label><br/>");
+  body += F("<button type='submit'>Format SD to FAT/FAT32</button></form>");
+  body += F("<script>");
+  body += F("const fmtForm=document.getElementById('fmtForm');const fmtStage=document.getElementById('fmtStage');const fmtMessage=document.getElementById('fmtMessage');const fmtGuidance=document.getElementById('fmtGuidance');");
+  body += F("function setFmt(j){fmtStage.textContent=j.stage;fmtMessage.textContent=j.message;fmtGuidance.textContent=j.guidance;}");
+  body += F("function loadFmt(){fetch('/api/sd/format/status').then(r=>r.json()).then(setFmt).catch(()=>{});}loadFmt();setInterval(loadFmt,1200);");
+  body += F("fmtForm.addEventListener('submit',async function(e){e.preventDefault();const ok=document.getElementById('fmtCheckbox').checked;const token=(document.getElementById('fmtToken').value||'').trim();if(!ok){setFmt({stage:'blocked',message:'confirm the destructive warning first',guidance:'Check the confirmation box, then retry.'});return;}if(token!=='FORMAT'){setFmt({stage:'blocked',message:'confirmation text mismatch',guidance:'Type FORMAT exactly to continue.'});return;}if(!confirm('Formatting will erase all files on this SD card. Continue?')){return;}setFmt({stage:'starting',message:'starting SD format request',guidance:'Keep this page open while formatting/remount/validation complete.'});const req='confirm='+encodeURIComponent(token);const res=await fetch('/api/sd/format',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:req});let j={stage:'failed',message:'format request failed',guidance:'Retry. If repeated, check SD card and wiring.'};try{j=await res.json();}catch(_e){}setFmt(j);});");
+  body += F("</script>");
   body += F("</body></html>");
   server.send(200, F("text/html"), body);
 }
@@ -257,6 +318,115 @@ void handleSdDiagnosticsPage() {
   body += F("<p><a href='/api/sd/status'>View raw JSON status</a></p>");
   body += F("<p><a href='/files'>Back to file browser</a></p></body></html>");
   server.send(200, F("text/html"), body);
+}
+
+bool validateSdWritableReadable(String& detail) {
+  const char* kProbePath = "/.fmt_probe.txt";
+  const char* kProbeData = "fmt_probe_ok";
+  File probe = SD.open(kProbePath, FILE_WRITE);
+  if (!probe) {
+    detail = F("probe write open failed");
+    return false;
+  }
+
+  const size_t expected = strlen(kProbeData);
+  const size_t written = probe.write(reinterpret_cast<const uint8_t*>(kProbeData), expected);
+  probe.close();
+  if (written != expected) {
+    detail = F("probe write failed");
+    SD.remove(kProbePath);
+    return false;
+  }
+
+  File verify = SD.open(kProbePath, FILE_READ);
+  if (!verify) {
+    detail = F("probe read open failed");
+    SD.remove(kProbePath);
+    return false;
+  }
+  String data;
+  while (verify.available()) data += static_cast<char>(verify.read());
+  verify.close();
+  SD.remove(kProbePath);
+
+  if (data != kProbeData) {
+    detail = F("probe read mismatch");
+    return false;
+  }
+  detail = F("root access + write/read probe passed");
+  return true;
+}
+
+bool ensureSdMountedAndUsable(String& detail) {
+  if (!SD.begin(kSdCsPin, SPI, kSdSpiHz, kSdMountPoint, 5, false)) {
+    detail = F("SD.begin failed");
+    return false;
+  }
+  if (SD.cardType() == CARD_NONE) {
+    detail = F("card not detected");
+    return false;
+  }
+  if (SD.totalBytes() == 0) {
+    detail = F("mounted but filesystem size is zero");
+    return false;
+  }
+  File root = SD.open("/");
+  if (!root || !root.isDirectory()) {
+    detail = F("root open failed");
+    return false;
+  }
+  detail = F("mounted and root listed");
+  return true;
+}
+
+bool formatSdToFatAndRemount() {
+  setSdFormatStatus(F("precheck"), F("checking SD presence and mount state"), F("Ensure an SD card is inserted and not write-protected."), true, false, false);
+
+  String detail;
+  if (!ensureSdMountedAndUsable(detail)) {
+    if (detail.indexOf("card not detected") >= 0) {
+      setSdStatus(SdFailureStage::kCardCommFailure, false, detail);
+      setSdFormatStatus(F("failed"), F("SD format failed: no card detected"), F("Insert/re-seat a card, then retry. If still absent, verify wiring and card health."), false, false, true);
+    } else {
+      setSdStatus(SdFailureStage::kMountFsFailure, false, detail);
+      setSdFormatStatus(F("failed"), String(F("SD format precheck failed: ")) + detail, F("Try re-seating the card, then retry formatting. If needed, power-cycle and retry."), false, false, true);
+    }
+    return false;
+  }
+
+  setSdFormatStatus(F("formatting"), F("erasing existing filesystem metadata"), F("Do not remove power or SD card."), true, false, false);
+  uint8_t zeroSector[512] = {0};
+  if (!SD.writeRAW(zeroSector, 0)) {
+    setSdFormatStatus(F("failed"), F("SD format failed: cannot write raw sector"), F("Card may be write-protected or failing. Unlock/re-seat/replace the card and retry."), false, false, true);
+    return false;
+  }
+
+  setSdFormatStatus(F("remounting"), F("creating FAT/FAT32 filesystem and remounting"), F("Wait for remount to complete."), true, false, false);
+  SD.end();
+  if (!SD.begin(kSdCsPin, SPI, kSdSpiHz, kSdMountPoint, 5, true)) {
+    setSdStatus(SdFailureStage::kMountFsFailure, false, F("format/remount begin failed"));
+    setSdFormatStatus(F("failed"), F("SD format failed: remount failed"), F("Retry with another card. If repeated, format on PC as FAT32 then retry."), false, false, true);
+    return false;
+  }
+
+  String remountDetail;
+  if (!ensureSdMountedAndUsable(remountDetail)) {
+    setSdStatus(SdFailureStage::kMountFsFailure, false, remountDetail);
+    setSdFormatStatus(F("failed"), String(F("SD format failed after remount: ")) + remountDetail, F("Try a different SD card and verify wiring/power stability."), false, false, true);
+    return false;
+  }
+
+  setSdFormatStatus(F("validating"), F("running post-format validation"), F("Checking root access and write/read probe."), true, false, false);
+  String validateDetail;
+  if (!validateSdWritableReadable(validateDetail)) {
+    setSdStatus(SdFailureStage::kReadRootFailure, false, validateDetail);
+    setSdFormatStatus(F("failed"), String(F("SD format validation failed: ")) + validateDetail, F("Re-seat or replace the card and retry. If persistent, test card on another device."), false, false, true);
+    return false;
+  }
+
+  setSdStatus(SdFailureStage::kOk, true, validateDetail);
+  setSdFormatStatus(F("success"), F("SD formatted and validated successfully"), F("You can now upload files from this page."), false, true, true);
+  return true;
 }
 
 void handleListApi() {
@@ -315,6 +485,28 @@ void handleOtaStatusApi() {
   json += jsonEscape(gOtaStatus.guidance);
   json += "\"}";
   server.send(200, F("application/json"), json);
+}
+
+void handleSdFormatStatusApi() {
+  server.send(200, F("application/json"), sdFormatStatusJson());
+}
+
+void handleSdFormatPost() {
+  if (gSdFormatStatus.inProgress) {
+    setSdFormatStatus(F("busy"), F("SD format already in progress"), F("Wait for completion before retrying."), true, false, false);
+    server.send(409, F("application/json"), sdFormatStatusJson());
+    return;
+  }
+
+  const String confirm = server.arg("confirm");
+  if (confirm != kSdFormatConfirmToken) {
+    setSdFormatStatus(F("blocked"), F("explicit confirmation required"), F("Type FORMAT exactly and submit again to proceed."), false, false, true);
+    server.send(400, F("application/json"), sdFormatStatusJson());
+    return;
+  }
+
+  const bool ok = formatSdToFatAndRemount();
+  server.send(ok ? 200 : 500, F("application/json"), sdFormatStatusJson());
 }
 
 void handleOtaPage() {
@@ -603,6 +795,8 @@ void configureRoutes() {
   server.on("/files", HTTP_GET, handleFilesPage);
   server.on("/api/list", HTTP_GET, handleListApi);
   server.on("/api/sd/status", HTTP_GET, handleSdStatusApi);
+  server.on("/api/sd/format/status", HTTP_GET, handleSdFormatStatusApi);
+  server.on("/api/sd/format", HTTP_POST, handleSdFormatPost);
   server.on("/api/ota/status", HTTP_GET, handleOtaStatusApi);
   server.on("/sd-diagnostics", HTTP_GET, handleSdDiagnosticsPage);
   server.on("/download", HTTP_GET, handleDownload);
@@ -616,7 +810,7 @@ void configureRoutes() {
 bool mountSd() {
   setSdStatus(SdFailureStage::kInitBusFailure, false, F("not initialized"));
   SPI.begin(kSdSckPin, kSdMisoPin, kSdMosiPin, kSdCsPin);
-  if (!SD.begin(kSdCsPin)) {
+  if (!SD.begin(kSdCsPin, SPI, kSdSpiHz, kSdMountPoint, 5, false)) {
     const uint8_t cardType = SD.cardType();
     if (cardType == CARD_NONE) {
       setSdStatus(SdFailureStage::kCardCommFailure, false, F("card not detected during SD.begin"));

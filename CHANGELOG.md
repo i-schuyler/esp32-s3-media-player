@@ -12,6 +12,27 @@
 - PR: <url>
 - Issue: <url>
 
+## [v0.1.5] - 2026-03-16
+
+### Added
+
+* Issue #21 implementation plan mapping SD format scope to acceptance/smoke checks.
+* `/files` now includes a destructive SD format action with explicit confirmation requirements and browser-visible status/guidance.
+* SD format status/trigger APIs for stage reporting and diagnostics.
+
+### Changed
+
+* Firmware now attempts SD reformat-to-usable FAT/FAT32 flow with remount and post-format write/read validation.
+
+### Fixed
+
+* SD format flow now reports actionable failure guidance instead of opaque errors for common card/precheck/remount/validation failures.
+
+### Notes
+
+* PR:
+* Issue: https://github.com/i-schuyler/esp32-s3-media-player/issues/21
+
 ## [v0.1.4] - 2026-03-16
 
 ### Added
