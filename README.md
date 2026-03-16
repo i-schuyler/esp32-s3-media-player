@@ -53,6 +53,8 @@ pio device monitor -b 115200
 - Update `CHANGELOG.md` in prepend order (newest entry first) for each merged PR.
 - Tag a release that matches the changelog update after merge.
 - Follow `docs/RELEASE_AND_PIN_POLICY.md` for version bump and pin/docs alignment guardrails.
+- Before merging to `main`, prepend a changelog release entry using `## [vX.Y.Z] - YYYY-MM-DD`.
+- After merge, GitHub Actions (`.github/workflows/release.yml`) automatically tags that version, creates a GitHub release, and uploads `firmware.bin` built for `esp32-s3-devkitc-1-n32r16v`.
 
 ## License
 MIT (see `LICENSE`).
