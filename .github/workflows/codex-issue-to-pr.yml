@@ -41,6 +41,11 @@ jobs:
               }
             }
 
+            if (!context.payload.issue) {
+              core.info('No issue payload found for this event; skipping started comment.');
+              return;
+            }
+
             const issueNumber = context.payload.issue.number;
             const owner = context.repo.owner;
             const repo = context.repo.repo;
@@ -53,6 +58,7 @@ jobs:
             });
 
       - name: Codex draft PR from issue
+        id: codex_run
         if: |
           github.event_name == 'issues' ||
           (github.event_name == 'issue_comment' && github.event.comment.body == '/retry') ||
@@ -88,35 +94,147 @@ jobs:
             github.event_name == 'workflow_dispatch'
           )
         uses: actions/github-script@v7
+        env:
+          CODEX_STEP_OUTCOME: ${{ steps.codex_run.outcome }}
         with:
           github-token: ${{ github.token }}
           script: |
+            if (!context.payload.issue) {
+              core.setFailed('No issue payload found; cannot discover or comment linked PR.');
+              return;
+            }
+
             const issueNumber = context.payload.issue.number;
             const owner = context.repo.owner;
             const repo = context.repo.repo;
+            const issueUrl = context.payload.issue.html_url;
+            const codexOutcome = process.env.CODEX_STEP_OUTCOME || 'unknown';
 
-            const qUrl = `repo:${owner}/${repo} is:pr ${context.payload.issue.html_url}`;
-            const qHash = `repo:${owner}/${repo} is:pr (#${issueNumber})`;
+            const discoveredPrs = new Map();
 
-            async function search(q) {
-              return await github.rest.search.issuesAndPullRequests({ q, per_page: 10 });
+            async function addPullRequest(pullNumber, source) {
+              if (discoveredPrs.has(pullNumber)) return;
+              const { data: pr } = await github.rest.pulls.get({
+                owner,
+                repo,
+                pull_number: pullNumber,
+              });
+              discoveredPrs.set(pr.number, pr);
+              core.info(`Found PR #${pr.number} via ${source}: ${pr.html_url}`);
             }
 
-            let results = await search(qUrl);
-            if (!results.data.items.length) results = await search(qHash);
+            async function search(query) {
+              return await github.rest.search.issuesAndPullRequests({ q: query, per_page: 50 });
+            }
 
-            if (!results.data.items.length) {
+            const searchQueries = [
+              `repo:${owner}/${repo} is:pr state:all "${issueUrl}"`,
+              `repo:${owner}/${repo} is:pr state:all "issues/${issueNumber}"`,
+              `repo:${owner}/${repo} is:pr state:all "#${issueNumber}"`,
+              `repo:${owner}/${repo} is:pr state:all "${owner}/${repo}#${issueNumber}"`,
+            ];
+
+            for (const query of searchQueries) {
+              const results = await search(query);
+              for (const item of results.data.items) {
+                await addPullRequest(item.number, `search:${query}`);
+              }
+            }
+
+            const issueBranchPrefix = `heads/codex/issue-${issueNumber}`;
+            let matchingIssueRefs = [];
+
+            try {
+              const refs = await github.rest.git.listMatchingRefs({
+                owner,
+                repo,
+                ref: issueBranchPrefix,
+              });
+              matchingIssueRefs = refs.data
+                .filter((refEntry) => refEntry.ref.startsWith('refs/heads/'))
+                .map((refEntry) => ({
+                  branch: refEntry.ref.replace('refs/heads/', ''),
+                  sha: refEntry.object.sha,
+                }));
+            } catch (error) {
+              if (error.status !== 404) {
+                throw error;
+              }
+            }
+
+            for (const refEntry of matchingIssueRefs) {
+              const prsForBranch = await github.rest.pulls.list({
+                owner,
+                repo,
+                state: 'all',
+                head: `${owner}:${refEntry.branch}`,
+                per_page: 20,
+              });
+
+              for (const pr of prsForBranch.data) {
+                await addPullRequest(pr.number, `head:${refEntry.branch}`);
+              }
+
+              const prsForCommit = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                owner,
+                repo,
+                commit_sha: refEntry.sha,
+                per_page: 20,
+              });
+
+              for (const pr of prsForCommit.data) {
+                await addPullRequest(pr.number, `commit:${refEntry.sha}`);
+              }
+            }
+
+            const branchSet = new Set(matchingIssueRefs.map((refEntry) => refEntry.branch));
+            const linkedPrs = Array.from(discoveredPrs.values());
+
+            if (!linkedPrs.length) {
+              const branchLines = matchingIssueRefs.length
+                ? matchingIssueRefs
+                    .map((refEntry) => `- \`${refEntry.branch}\` @ \`${refEntry.sha}\``)
+                    .join('\n')
+                : '- none found';
+
+              const recoveryBody = [
+                `Codex workflow ran, but no PR was discoverable for issue #${issueNumber}.`,
+                '',
+                `Codex step outcome: \`${codexOutcome}\``,
+                '',
+                'Detected issue branch tips:',
+                branchLines,
+                '',
+                'Manual recovery:',
+                '1. If a branch exists above, open a PR from that branch into `main`.',
+                `2. Ensure the PR body includes this issue URL: ${issueUrl}`,
+                '3. Comment `/retry` on this issue after creating/updating the PR.',
+                '',
+                `Workflow run: https://github.com/${owner}/${repo}/actions/runs/${process.env.GITHUB_RUN_ID}`,
+              ].join('\n');
+
               await github.rest.issues.createComment({
                 owner,
                 repo,
                 issue_number: issueNumber,
-                body: `Codex workflow ran, but I couldn't find a PR referencing this issue yet. Check Actions logs for details.`,
+                body: recoveryBody,
               });
-              core.setFailed('Codex did not produce a discoverable PR.');
+              core.setFailed(`Codex did not produce a discoverable PR for issue #${issueNumber}.`);
               return;
             }
 
-            const pr = results.data.items.sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at))[0];
+            const pr = linkedPrs.sort((a, b) => {
+              const aBranchMatch = branchSet.has(a.head.ref) ? 1 : 0;
+              const bBranchMatch = branchSet.has(b.head.ref) ? 1 : 0;
+              if (aBranchMatch !== bBranchMatch) return bBranchMatch - aBranchMatch;
+
+              const aOpen = a.state === 'open' ? 1 : 0;
+              const bOpen = b.state === 'open' ? 1 : 0;
+              if (aOpen !== bOpen) return bOpen - aOpen;
+
+              return new Date(b.updated_at) - new Date(a.updated_at);
+            })[0];
+
             await github.rest.issues.createComment({
               owner,
               repo,
