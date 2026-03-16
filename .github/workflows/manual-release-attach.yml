@@ -26,35 +26,28 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-
           tag="${{ inputs.tag }}"
           if [[ -z "$tag" ]]; then
             echo "::error::Input 'tag' is required. Example: v0.1.3"
             exit 1
           fi
-
           if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::Invalid tag format: '$tag'. Expected semantic tag like v0.1.3"
             exit 1
           fi
-
           git fetch --tags --force origin
-
           if ! git rev-parse --verify --quiet "refs/tags/${tag}" >/dev/null; then
             echo "::error::Tag '${tag}' does not exist in this repository."
             exit 1
           fi
-
           if ! command -v gh >/dev/null 2>&1; then
             echo "::error::GitHub CLI (gh) is not installed on runner."
             exit 1
           fi
-
           if ! gh release view "$tag" >/dev/null 2>&1; then
             echo "::error::GitHub release for tag '${tag}' does not exist. Create the release first."
             exit 1
           fi
-
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
 
       - name: Checkout requested tag
@@ -73,31 +66,25 @@ jobs:
         id: firmware
         run: |
           set -euo pipefail
-
           expected_path=".pio/build/esp32-s3-devkitc-1-n32r16v/firmware.bin"
           mapfile -t firmware_bins < <(find .pio/build -type f -name firmware.bin | sort)
-
           if (( ${#firmware_bins[@]} == 0 )); then
             echo "::error::No firmware.bin artifact found under .pio/build after build."
             exit 1
           fi
-
           if (( ${#firmware_bins[@]} > 1 )); then
             echo "::error::Ambiguous firmware artifacts detected. Expected exactly one firmware.bin, found ${#firmware_bins[@]}:"
             printf ' - %s\n' "${firmware_bins[@]}"
             exit 1
           fi
-
           if [[ "${firmware_bins[0]}" != "${expected_path}" ]]; then
             echo "::error::Firmware binary path mismatch. Expected ${expected_path}, found ${firmware_bins[0]}"
             exit 1
           fi
-
           if [[ ! -s "${expected_path}" ]]; then
             echo "::error::Firmware artifact exists but is empty: ${expected_path}"
             exit 1
           fi
-
           echo "path=${expected_path}" >> "$GITHUB_OUTPUT"
 
       - name: Upload firmware.bin to existing release
@@ -107,18 +94,16 @@ jobs:
           set -euo pipefail
           tag="${{ steps.target.outputs.tag }}"
           firmware_path="${{ steps.firmware.outputs.path }}"
-
           if [[ -z "$tag" ]]; then
             echo "::error::Upload target tag is empty."
             exit 1
           fi
-
           if [[ ! -f "$firmware_path" ]]; then
             echo "::error::Upload asset does not exist: $firmware_path"
             exit 1
           fi
-
           if ! gh release upload "$tag" "${firmware_path}#firmware.bin" --clobber; then
             echo "::error::Failed to upload firmware.bin to release '${tag}'."
             exit 1
           fi
+          
