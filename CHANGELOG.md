@@ -12,6 +12,28 @@
 - PR: <url>
 - Issue: <url>
 
+## [v0.1.2] - 2026-03-16
+
+### Added
+
+* Quick start documentation covering AP access, web UI usage, upload/browse/stream flow, and basic OTA usage.
+* Issue #12 implementation plan mapping scope to `ACCEPTANCE.md` and `docs/SMOKE_TEST_SPEC.md`.
+* Release and pin alignment policy doc with docs-first pin-change rule.
+
+### Changed
+
+* PR template now includes `VERSION_BUMP` and `RELEASE_VERSION` metadata fields.
+* README/docs now link to quick start and release/pin policy guidance.
+
+### Fixed
+
+* Repository policy discipline to reduce changelog/tag/docs drift and make pin/docs alignment expectations explicit.
+
+### Notes
+
+* PR:
+* Issue: https://github.com/i-schuyler/esp32-s3-media-player/issues/12
+
 ## [v0.1.1] - 2026-03-15
 
 ### Added

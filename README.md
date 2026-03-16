@@ -6,6 +6,9 @@ ESP32-S3 Media Server is firmware for `esp32-s3-devkitc-1-n32r16v` that:
 - supports upload/download + HTTP Range streaming for mobile players (VLC),
 - provides a web OTA firmware update flow with progress/status reporting.
 
+## Quick start
+- See `docs/QUICK_START.md` for first-time setup, AP credentials, web UI paths, upload/browse/stream usage, and basic OTA flow.
+
 ## Build and Upload (`esp32-s3-devkitc-1-n32r16v`)
 1. Install PlatformIO Core (CLI) and Python 3.
 2. Build:
@@ -47,6 +50,9 @@ pio device monitor -b 115200
 - `docs/SMOKE_TEST_SPEC.md` for smoke verification details
 
 ## Changelog and releases
+- Update `CHANGELOG.md` in prepend order (newest entry first) for each merged PR.
+- Tag a release that matches the changelog update after merge.
+- Follow `docs/RELEASE_AND_PIN_POLICY.md` for version bump and pin/docs alignment guardrails.
 - Before merging to `main`, prepend a changelog release entry using `## [vX.Y.Z] - YYYY-MM-DD`.
 - After merge, GitHub Actions (`.github/workflows/release.yml`) automatically tags that version, creates a GitHub release, and uploads `firmware.bin` built for `esp32-s3-devkitc-1-n32r16v`.
 

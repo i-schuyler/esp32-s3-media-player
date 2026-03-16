@@ -4,6 +4,10 @@
 ## Scope
 - What this PR changes (1-5 bullets)
 
+## Versioning
+VERSION_BUMP: none|patch|minor|major
+RELEASE_VERSION: vX.Y.Z|n/a
+
 ## Acceptance checklist
 - [ ] Acceptance items addressed: (reference ACCEPTANCE.md numbers)
 

@@ -4,6 +4,7 @@
 A PR may be auto-merged only when ALL are true:
 - All required CI checks pass.
 - PR body includes `RISK: low` (exact token) and `BREAKING: no`.
+- PR body includes `NEEDS_HIL: no` (until HIL runner exists).
 - PR scope matches a linked issue (Issue URL present).
 - No forbidden paths touched (see `.github/workflows/ci.yml`).
 
@@ -23,6 +24,8 @@ Automation MUST stop and ask for human input when:
 
 ## Release hygiene (required after merge)
 - Every merged PR must update `CHANGELOG.md` (prepend order; newest entry first).
+- After merging, create and push a release tag that matches the changelog entry.
+- Release/version metadata and pin/docs alignment rules are defined in `docs/RELEASE_AND_PIN_POLICY.md`.
 - After a PR is merged to `main`, `.github/workflows/release.yml` reads the newest changelog release entry (`## [vX.Y.Z] - YYYY-MM-DD`) and uses that version.
 - The release workflow builds `esp32-s3-devkitc-1-n32r16v`, tags the merge commit, creates the GitHub release, and uploads `firmware.bin`.
 - If changelog parsing, tag creation, or firmware artifact checks fail, the release job stops with explicit errors and does not publish a release.
