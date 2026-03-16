@@ -47,8 +47,8 @@ pio device monitor -b 115200
 - `docs/SMOKE_TEST_SPEC.md` for smoke verification details
 
 ## Changelog and releases
-- Update `CHANGELOG.md` in prepend order (newest entry first) for each merged PR.
-- Tag a release that matches the changelog update after merge.
+- Before merging to `main`, prepend a changelog release entry using `## [vX.Y.Z] - YYYY-MM-DD`.
+- After merge, GitHub Actions (`.github/workflows/release.yml`) automatically tags that version, creates a GitHub release, and uploads `firmware.bin` built for `esp32-s3-devkitc-1-n32r16v`.
 
 ## License
 MIT (see `LICENSE`).
