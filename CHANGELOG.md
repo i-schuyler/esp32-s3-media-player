@@ -12,6 +12,26 @@
 - PR: <url>
 - Issue: <url>
 
+## [v0.1.3] - 2026-03-16
+
+### Added
+
+* User-friendly SD diagnostics page and raw JSON SD status endpoint.
+* Browser-visible troubleshooting guidance for SD init, mount, and root access failures.
+
+### Changed
+
+* File browser and SD-unavailable states now point users to clearer next-step diagnostics.
+
+### Fixed
+
+* Current main now includes the recovered SD diagnostics work that was previously stranded on a remote branch.
+
+### Notes
+
+* PR: <fill in PR URL if desired>
+* Issue: https://github.com/i-schuyler/esp32-s3-media-player/issues/8
+
 ## [v0.1.2] - 2026-03-16
 
 ### Added
