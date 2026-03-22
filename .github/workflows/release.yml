@@ -46,8 +46,11 @@ jobs:
             exit 1
           fi
 
+          asset_name="media_server_${version//./_}.bin"
+
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "version_line=${version_line}" >> "$GITHUB_OUTPUT"
+          echo "asset_name=${asset_name}" >> "$GITHUB_OUTPUT"
 
       - name: Build firmware for esp32-s3-devkitc-1-n32r16v
         run: |
@@ -117,20 +120,21 @@ jobs:
             exit 1
           fi
 
-      - name: Create GitHub release and upload firmware
+      - name: Create GitHub release and upload firmware asset
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           version="${{ steps.version.outputs.version }}"
           firmware_path="${{ steps.firmware.outputs.path }}"
+          asset_name="${{ steps.version.outputs.asset_name }}"
 
           if ! command -v gh >/dev/null 2>&1; then
             echo "::error::GitHub CLI (gh) is not installed on runner."
             exit 1
           fi
 
-          gh release create "$version" "${firmware_path}#firmware.bin" \
+          gh release create "$version" "${firmware_path}#${asset_name}" \
             --title "$version" \
             --notes-file release_notes.md \
             --verify-tag

@@ -12,6 +12,27 @@
 - PR: <url>
 - Issue: <url>
 
+## [v0.1.6] - 2026-03-22
+
+### Added
+
+* Issue #23 implementation notes covering OTA apply reliability, SD mount reliability, and release asset naming.
+
+### Changed
+
+* Release workflows now publish firmware assets as `media_server_vX_X_X.bin`.
+* OTA page/stage flow now distinguishes upload completion (`upload_complete`) from validation/apply and final result.
+
+### Fixed
+
+* OTA now initializes update with the expected upload size when available and enforces size-consistent finalization to avoid false validation/apply failures.
+* SD bring-up no longer treats `SD.totalBytes()==0` alone as mount failure when root access is valid, improving known-good FAT32 card handling.
+
+### Notes
+
+* PR:
+* Issue: https://github.com/i-schuyler/esp32-s3-media-player/issues/23
+
 ## [v0.1.5] - 2026-03-16
 
 ### Added

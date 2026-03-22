@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing release tag to attach firmware.bin to (example: v0.1.3)
+        description: Existing release tag to attach media_server_vX_X_X.bin to (example: v0.1.3)
         required: true
         type: string
 
@@ -48,7 +48,9 @@ jobs:
             echo "::error::GitHub release for tag '${tag}' does not exist. Create the release first."
             exit 1
           fi
+          asset_name="media_server_${tag//./_}.bin"
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "asset_name=${asset_name}" >> "$GITHUB_OUTPUT"
 
       - name: Checkout requested tag
         run: |
@@ -87,13 +89,14 @@ jobs:
           fi
           echo "path=${expected_path}" >> "$GITHUB_OUTPUT"
 
-      - name: Upload firmware.bin to existing release
+      - name: Upload firmware asset to existing release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           tag="${{ steps.target.outputs.tag }}"
           firmware_path="${{ steps.firmware.outputs.path }}"
+          asset_name="${{ steps.target.outputs.asset_name }}"
           if [[ -z "$tag" ]]; then
             echo "::error::Upload target tag is empty."
             exit 1
@@ -102,8 +105,8 @@ jobs:
             echo "::error::Upload asset does not exist: $firmware_path"
             exit 1
           fi
-          if ! gh release upload "$tag" "${firmware_path}#firmware.bin" --clobber; then
-            echo "::error::Failed to upload firmware.bin to release '${tag}'."
+          if ! gh release upload "$tag" "${firmware_path}#${asset_name}" --clobber; then
+            echo "::error::Failed to upload ${asset_name} to release '${tag}'."
             exit 1
           fi
           
