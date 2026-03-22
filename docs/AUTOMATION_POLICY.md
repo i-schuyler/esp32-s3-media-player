@@ -27,6 +27,6 @@ Automation MUST stop and ask for human input when:
 - After merging, create and push a release tag that matches the changelog entry.
 - Release/version metadata and pin/docs alignment rules are defined in `docs/RELEASE_AND_PIN_POLICY.md`.
 - After a PR is merged to `main`, `.github/workflows/release.yml` reads the newest changelog release entry (`## [vX.Y.Z] - YYYY-MM-DD`) and uses that version.
-- The release workflow builds `esp32-s3-devkitc-1-n32r16v`, tags the merge commit, creates the GitHub release, and uploads `firmware.bin`.
+- The release workflow builds `esp32-s3-devkitc-1-n32r16v`, tags the merge commit, creates the GitHub release, and uploads `media_server_vX_X_X.bin`.
 - If changelog parsing, tag creation, or firmware artifact checks fail, the release job stops with explicit errors and does not publish a release.
-- For an already-existing tag/release missing `firmware.bin`, run `.github/workflows/manual-release-attach.yml` via `workflow_dispatch` and provide the existing tag (for example `v0.1.3`).
+- For an already-existing tag/release missing `media_server_vX_X_X.bin`, run `.github/workflows/manual-release-attach.yml` via `workflow_dispatch` and provide the existing tag (for example `v0.1.3`).

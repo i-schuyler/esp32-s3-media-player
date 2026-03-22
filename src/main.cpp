@@ -366,16 +366,16 @@ bool ensureSdMountedAndUsable(String& detail) {
     detail = F("card not detected");
     return false;
   }
-  if (SD.totalBytes() == 0) {
-    detail = F("mounted but filesystem size is zero");
-    return false;
-  }
   File root = SD.open("/");
   if (!root || !root.isDirectory()) {
     detail = F("root open failed");
     return false;
   }
-  detail = F("mounted and root listed");
+  if (SD.totalBytes() == 0) {
+    detail = F("mounted and root listed (capacity query unavailable)");
+  } else {
+    detail = F("mounted and root listed");
+  }
   return true;
 }
 
@@ -527,7 +527,7 @@ void handleOtaPage() {
   body += F("<script>");
   body += F("const f=document.getElementById('otaForm');const p=document.getElementById('uploadProgress');const st=document.getElementById('stage');const s=document.getElementById('status');const g=document.getElementById('guidance');");
   body += F("function setUi(j){st.textContent='Stage: '+j.stage;let msg='Status: '+j.message;if(j.in_progress){msg+=' ('+j.received+' bytes)';}s.textContent=msg;g.textContent='Next step: '+j.guidance;}");
-  body += F("f.addEventListener('submit',function(e){e.preventDefault();const file=document.getElementById('fw').files[0];if(!file){st.textContent='Stage: failed';s.textContent='Status: select firmware.bin first';g.textContent='Next step: choose firmware.bin then retry.';return;}const data=new FormData();data.append('firmware',file);const x=new XMLHttpRequest();x.open('POST','/ota',true);st.textContent='Stage: upload';s.textContent='Status: starting upload';g.textContent='Next step: keep this page open until a final result is shown.';x.upload.onprogress=function(ev){if(ev.lengthComputable){const pct=Math.round((ev.loaded/ev.total)*100);p.textContent='Upload progress: '+pct+'%';if(pct>=100){st.textContent='Stage: validate_apply';s.textContent='Status: upload complete; validating and applying firmware';}}};x.onreadystatechange=function(){if(x.readyState===4&&x.status>=400){s.textContent='Status: '+x.responseText;}};x.onerror=function(){st.textContent='Stage: failed';s.textContent='Status: upload failed (network error)';g.textContent='Next step: keep device powered, reconnect to AP, and retry.';};x.send(data);});");
+  body += F("f.addEventListener('submit',function(e){e.preventDefault();const file=document.getElementById('fw').files[0];if(!file){st.textContent='Stage: failed';s.textContent='Status: select firmware.bin first';g.textContent='Next step: choose firmware.bin then retry.';return;}const data=new FormData();data.append('firmware',file);const x=new XMLHttpRequest();x.open('POST','/ota',true);st.textContent='Stage: upload';s.textContent='Status: starting upload';g.textContent='Next step: keep this page open until a final result is shown.';x.upload.onprogress=function(ev){if(ev.lengthComputable){const pct=Math.round((ev.loaded/ev.total)*100);p.textContent='Upload progress: '+pct+'%';if(pct>=100){st.textContent='Stage: upload_complete';s.textContent='Status: upload complete; waiting for device validation/apply';}}};x.onreadystatechange=function(){if(x.readyState===4&&x.status>=400){s.textContent='Status: '+x.responseText;}};x.onerror=function(){st.textContent='Stage: failed';s.textContent='Status: upload failed (network error)';g.textContent='Next step: keep device powered, reconnect to AP, and retry.';};x.send(data);});");
   body += F("setInterval(function(){fetch('/api/ota/status').then(r=>r.json()).then(setUi).catch(()=>{});},800);");
   body += F("</script></body></html>");
   server.send(200, F("text/html"), body);
@@ -536,7 +536,7 @@ void handleOtaPage() {
 String otaGuidanceForUpdateError(uint8_t error) {
   switch (error) {
     case UPDATE_ERROR_READ:
-      return F("The firmware file may be invalid/corrupted or for the wrong board. Rebuild/select firmware.bin for esp32-s3-devkitc-1-n32r16v and retry.");
+      return F("Device could not re-read written firmware bytes. Reboot and retry with a known-good firmware.bin for esp32-s3-devkitc-1-n32r16v. If repeated, reflash over USB once, then retry OTA.");
     case UPDATE_ERROR_SPACE:
       return F("Firmware image is too large for the OTA partition. Build for esp32-s3-devkitc-1-n32r16v and verify partition settings.");
     case UPDATE_ERROR_MAGIC_BYTE:
@@ -686,7 +686,8 @@ void handleOtaChunk() {
     gOtaStatus.message = F("starting OTA upload");
     gOtaStatus.guidance = F("Keep this page open while upload, validation, and apply complete.");
     gOtaRestartPending = false;
-    if (!Update.begin(UPDATE_SIZE_UNKNOWN, U_FLASH)) {
+    const size_t updateSize = gOtaStatus.expected > 0 ? gOtaStatus.expected : UPDATE_SIZE_UNKNOWN;
+    if (!Update.begin(updateSize, U_FLASH)) {
       gOtaStatus.inProgress = false;
       gOtaStatus.success = false;
       gOtaStatus.hasResult = true;
@@ -713,9 +714,9 @@ void handleOtaChunk() {
     if (gOtaStatus.expected > 0) {
       const unsigned long pct = static_cast<unsigned long>((gOtaStatus.received * 100UL) / gOtaStatus.expected);
       if (pct >= 100) {
-        gOtaStatus.stage = F("validate_apply");
-        gOtaStatus.message = F("upload complete, validating and applying firmware");
-        gOtaStatus.guidance = F("Wait for final success/failure result. Do not power off.");
+        gOtaStatus.stage = F("upload_complete");
+        gOtaStatus.message = F("upload complete, preparing validation/apply");
+        gOtaStatus.guidance = F("Keep page open. Device now moves to validation/apply.");
       } else {
         gOtaStatus.stage = F("upload");
         gOtaStatus.message = "uploading firmware (" + String(pct) + "%)";
@@ -726,10 +727,22 @@ void handleOtaChunk() {
     }
   } else if (upload.status == UPLOAD_FILE_END) {
     if (!gOtaStatus.inProgress) return;
+    if (gOtaStatus.expected > 0 && gOtaStatus.received != gOtaStatus.expected) {
+      Update.abort();
+      gOtaStatus.inProgress = false;
+      gOtaStatus.success = false;
+      gOtaStatus.hasResult = true;
+      gOtaStatus.stage = F("failed");
+      gOtaStatus.message = F("OTA failed: upload size mismatch before validation/apply");
+      gOtaStatus.guidance = F("Retry OTA on a stable connection. Keep this page open until the final status appears.");
+      Serial.println(F("OTA: SIZE MISMATCH"));
+      return;
+    }
     gOtaStatus.stage = F("validate_apply");
     gOtaStatus.message = F("upload complete, validating and applying firmware");
     gOtaStatus.guidance = F("Wait for final OTA result.");
-    if (Update.end(true)) {
+    const bool allowIncomplete = gOtaStatus.expected == 0;
+    if (Update.end(allowIncomplete)) {
       gOtaStatus.inProgress = false;
       gOtaStatus.success = true;
       gOtaStatus.hasResult = true;
@@ -829,19 +842,19 @@ bool mountSd() {
     Serial.printf("SD: DIAG STAGE=%s\n", sdStageCode(gSdStatus.stage).c_str());
     return false;
   }
-  if (SD.totalBytes() == 0) {
-    setSdStatus(SdFailureStage::kMountFsFailure, false, F("filesystem size is zero"));
-    Serial.println(F("SD: CRC ERROR"));
-    Serial.printf("SD: DIAG STAGE=%s\n", sdStageCode(gSdStatus.stage).c_str());
-    return false;
-  }
+  const bool capacityKnown = SD.totalBytes() > 0;
   File root = SD.open("/");
   if (!root || !root.isDirectory()) {
     setSdStatus(SdFailureStage::kReadRootFailure, false, F("root open failed after mount"));
     Serial.printf("SD: DIAG STAGE=%s\n", sdStageCode(gSdStatus.stage).c_str());
     return false;
   }
-  setSdStatus(SdFailureStage::kOk, true, F("mounted and root listed"));
+  if (!capacityKnown) {
+    Serial.println(F("SD: CAPACITY UNKNOWN (continuing because root access works)"));
+    setSdStatus(SdFailureStage::kOk, true, F("mounted and root listed (capacity query unavailable)"));
+  } else {
+    setSdStatus(SdFailureStage::kOk, true, F("mounted and root listed"));
+  }
   Serial.println(F("SD: READ OK"));
   Serial.println(F("SD: LIST OK"));
   return true;
