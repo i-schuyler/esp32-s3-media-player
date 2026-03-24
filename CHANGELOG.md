@@ -12,6 +12,28 @@
 - PR: <url>
 - Issue: <url>
 
+## [v0.1.7] - 2026-03-24
+
+### Added
+
+* Issue #23 root-cause implementation details for release-build parity verification and OTA/SD diagnostics.
+* Shared release parity guard script (`scripts/verify_release_build_parity.sh`) used by release and manual release-attach workflows.
+
+### Changed
+
+* OTA status API/UI now exposes build env, running partition, target OTA partition, and normalized OTA error code/name.
+* Release workflows now enforce env/board/partition parity (`esp32-s3-devkitc-1-n32r16v`) before building assets.
+
+### Fixed
+
+* SD mount path now retries initialization at lower SPI clocks and reports concrete attempt-level diagnostics for card-comm/init/root failures.
+* OTA begin/write/end failure paths now report concrete update errors with clearer stage/action guidance for wrong artifact vs apply failure triage.
+
+### Notes
+
+* PR:
+* Issue: https://github.com/i-schuyler/esp32-s3-media-player/issues/23
+
 ## [v0.1.6] - 2026-03-22
 
 ### Added
