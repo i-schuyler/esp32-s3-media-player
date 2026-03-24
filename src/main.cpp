@@ -5,6 +5,7 @@
 #include <Update.h>
 #include <WebServer.h>
 #include <WiFi.h>
+#include <esp_ota_ops.h>
 #include <cstring>
 
 namespace {
@@ -15,9 +16,11 @@ constexpr uint8_t kSdSckPin = 12;
 constexpr uint8_t kSdMisoPin = 11;
 constexpr uint8_t kSdMosiPin = 10;
 constexpr uint32_t kSdSpiHz = 4000000;
+constexpr uint32_t kSdSpiRetryHz[] = {kSdSpiHz, 2000000, 1000000, 400000};
 constexpr const char* kSdMountPoint = "/sd";
 constexpr const char* kSdFormatConfirmToken = "FORMAT";
 constexpr const char* kDefaultApPassword = "12345678";
+constexpr const char* kExpectedBoardTarget = "esp32-s3-devkitc-1-n32r16v";
 constexpr size_t kChunkSize = 2048;
 
 struct OtaStatus {
@@ -26,9 +29,14 @@ struct OtaStatus {
   bool hasResult = false;
   size_t received = 0;
   size_t expected = 0;
+  uint8_t errorCode = 0;
   String stage = F("idle");
+  String errorName = F("none");
   String message = F("idle");
   String guidance = F("Select firmware.bin built for esp32-s3-devkitc-1-n32r16v.");
+  String runningPartition = F("unknown");
+  String targetPartition = F("unknown");
+  String buildEnv = F("unknown");
 };
 
 OtaStatus gOtaStatus;
@@ -90,6 +98,90 @@ String jsonEscape(const String& in) {
   return out;
 }
 
+String otaBuildEnvName() {
+#ifdef PIOENV
+  return String(PIOENV);
+#else
+  return F("unknown");
+#endif
+}
+
+String otaPartitionSummary(const esp_partition_t* partition) {
+  if (partition == nullptr) return F("none");
+  String summary = (partition->label && partition->label[0]) ? String(partition->label) : String(F("unnamed"));
+  summary += F(" @0x");
+  summary += String(static_cast<unsigned long>(partition->address), HEX);
+  summary += F(" size=0x");
+  summary += String(static_cast<unsigned long>(partition->size), HEX);
+  return summary;
+}
+
+void refreshOtaDiagnostics() {
+  gOtaStatus.buildEnv = otaBuildEnvName();
+  const esp_partition_t* running = esp_ota_get_running_partition();
+  const esp_partition_t* target = esp_ota_get_next_update_partition(nullptr);
+  gOtaStatus.runningPartition = otaPartitionSummary(running);
+  gOtaStatus.targetPartition = otaPartitionSummary(target);
+}
+
+String sdSpiSpeedLabel(uint32_t hz) {
+  if (hz >= 1000000UL) {
+    return String(static_cast<unsigned long>(hz / 1000000UL)) + F("MHz");
+  }
+  return String(static_cast<unsigned long>(hz / 1000UL)) + F("kHz");
+}
+
+bool mountSdAttempt(uint32_t hz, bool allowFormat, String& detail, SdFailureStage& stage, bool& capacityKnown) {
+  if (!SD.begin(kSdCsPin, SPI, hz, kSdMountPoint, 5, allowFormat)) {
+    if (SD.cardType() == CARD_NONE) {
+      stage = SdFailureStage::kCardCommFailure;
+      detail = String(F("card not detected: SD.begin failed at ")) + sdSpiSpeedLabel(hz) + F(" (cardType=none)");
+    } else {
+      stage = SdFailureStage::kInitBusFailure;
+      detail = String(F("SD.begin failed at ")) + sdSpiSpeedLabel(hz);
+    }
+    return false;
+  }
+
+  if (SD.cardType() == CARD_NONE) {
+    stage = SdFailureStage::kCardCommFailure;
+    detail = String(F("card not detected after begin at ")) + sdSpiSpeedLabel(hz);
+    return false;
+  }
+
+  File root = SD.open("/");
+  if (!root || !root.isDirectory()) {
+    stage = SdFailureStage::kReadRootFailure;
+    detail = String(F("root open failed at ")) + sdSpiSpeedLabel(hz);
+    return false;
+  }
+  root.close();
+
+  capacityKnown = SD.totalBytes() > 0;
+  detail = String(F("mounted and root listed at ")) + sdSpiSpeedLabel(hz);
+  if (!capacityKnown) {
+    detail += F(" (capacity query unavailable)");
+  }
+  stage = SdFailureStage::kOk;
+  return true;
+}
+
+bool mountSdWithRetries(bool allowFormat, String& detail, SdFailureStage& stage, bool& capacityKnown, uint32_t& usedHz) {
+  stage = SdFailureStage::kInitBusFailure;
+  detail = F("no mount attempts yet");
+  capacityKnown = false;
+  usedHz = kSdSpiHz;
+
+  for (const uint32_t hz : kSdSpiRetryHz) {
+    SD.end();
+    if (mountSdAttempt(hz, allowFormat, detail, stage, capacityKnown)) {
+      usedHz = hz;
+      return true;
+    }
+  }
+  return false;
+}
+
 String contentTypeForPath(const String& path) {
   if (path.endsWith(".mp3")) return F("audio/mpeg");
   if (path.endsWith(".wav")) return F("audio/wav");
@@ -145,7 +237,7 @@ String sdStageGuidance(SdFailureStage stage) {
     case SdFailureStage::kOk:
       return F("No action needed.");
     case SdFailureStage::kInitBusFailure:
-      return F("Check wiring and pins: CS=IO13, SCK=IO12, MISO=IO11, MOSI=IO10. Confirm 3.3V power and GND.");
+      return F("Check wiring and pins: CS=IO13, SCK=IO12, MISO=IO11, MOSI=IO10. Confirm 3.3V power and GND. Firmware already retries lower SPI speeds automatically.");
     case SdFailureStage::kCardCommFailure:
       return F("Re-seat or replace the card, confirm FAT32 formatting, and verify the card works on another device.");
     case SdFailureStage::kMountFsFailure:
@@ -358,23 +450,11 @@ bool validateSdWritableReadable(String& detail) {
 }
 
 bool ensureSdMountedAndUsable(String& detail) {
-  if (!SD.begin(kSdCsPin, SPI, kSdSpiHz, kSdMountPoint, 5, false)) {
-    detail = F("SD.begin failed");
+  SdFailureStage stage;
+  bool capacityKnown = false;
+  uint32_t usedHz = kSdSpiHz;
+  if (!mountSdWithRetries(false, detail, stage, capacityKnown, usedHz)) {
     return false;
-  }
-  if (SD.cardType() == CARD_NONE) {
-    detail = F("card not detected");
-    return false;
-  }
-  File root = SD.open("/");
-  if (!root || !root.isDirectory()) {
-    detail = F("root open failed");
-    return false;
-  }
-  if (SD.totalBytes() == 0) {
-    detail = F("mounted and root listed (capacity query unavailable)");
-  } else {
-    detail = F("mounted and root listed");
   }
   return true;
 }
@@ -384,7 +464,7 @@ bool formatSdToFatAndRemount() {
 
   String detail;
   if (!ensureSdMountedAndUsable(detail)) {
-    if (detail.indexOf("card not detected") >= 0) {
+    if (detail.indexOf("card not detected") >= 0 || detail.indexOf("cardType=none") >= 0) {
       setSdStatus(SdFailureStage::kCardCommFailure, false, detail);
       setSdFormatStatus(F("failed"), F("SD format failed: no card detected"), F("Insert/re-seat a card, then retry. If still absent, verify wiring and card health."), false, false, true);
     } else {
@@ -465,6 +545,7 @@ void handleListApi() {
 }
 
 void handleOtaStatusApi() {
+  refreshOtaDiagnostics();
   String json = "{";
   json += "\"in_progress\":";
   json += gOtaStatus.inProgress ? "true" : "false";
@@ -476,13 +557,23 @@ void handleOtaStatusApi() {
   json += String(static_cast<unsigned long>(gOtaStatus.received));
   json += ",\"expected\":";
   json += String(static_cast<unsigned long>(gOtaStatus.expected));
+  json += ",\"error_code\":";
+  json += String(static_cast<unsigned>(gOtaStatus.errorCode));
   json += ",\"stage\":\"";
   json += jsonEscape(gOtaStatus.stage);
+  json += "\",\"error_name\":\"";
+  json += jsonEscape(gOtaStatus.errorName);
   json += "\"";
   json += ",\"message\":\"";
   json += jsonEscape(gOtaStatus.message);
   json += "\",\"guidance\":\"";
   json += jsonEscape(gOtaStatus.guidance);
+  json += "\",\"build_env\":\"";
+  json += jsonEscape(gOtaStatus.buildEnv);
+  json += "\",\"running_partition\":\"";
+  json += jsonEscape(gOtaStatus.runningPartition);
+  json += "\",\"target_partition\":\"";
+  json += jsonEscape(gOtaStatus.targetPartition);
   json += "\"}";
   server.send(200, F("application/json"), json);
 }
@@ -511,7 +602,7 @@ void handleSdFormatPost() {
 
 void handleOtaPage() {
   String body;
-  body.reserve(4600);
+  body.reserve(5600);
   body += F("<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>");
   body += F("<title>OTA Update</title></head><body>");
   body += F("<h1>OTA Firmware Update</h1>");
@@ -522,11 +613,12 @@ void handleOtaPage() {
   body += F("<p id='uploadProgress'>Upload progress: 0%</p>");
   body += F("<p id='stage'>Stage: idle</p>");
   body += F("<p id='status'>Status: waiting for upload</p>");
+  body += F("<p id='diag'>Diag: env=unknown, running=unknown, target=unknown, error=none(0)</p>");
   body += F("<p id='guidance'>Next step: choose a valid firmware.bin for esp32-s3-devkitc-1-n32r16v.</p>");
   body += F("<p><a href='/'>Back</a></p>");
   body += F("<script>");
-  body += F("const f=document.getElementById('otaForm');const p=document.getElementById('uploadProgress');const st=document.getElementById('stage');const s=document.getElementById('status');const g=document.getElementById('guidance');");
-  body += F("function setUi(j){st.textContent='Stage: '+j.stage;let msg='Status: '+j.message;if(j.in_progress){msg+=' ('+j.received+' bytes)';}s.textContent=msg;g.textContent='Next step: '+j.guidance;}");
+  body += F("const f=document.getElementById('otaForm');const p=document.getElementById('uploadProgress');const st=document.getElementById('stage');const s=document.getElementById('status');const g=document.getElementById('guidance');const d=document.getElementById('diag');");
+  body += F("function setUi(j){st.textContent='Stage: '+j.stage;let msg='Status: '+j.message;if(j.in_progress){msg+=' ('+j.received+' bytes)';}s.textContent=msg;d.textContent='Diag: env='+j.build_env+', running='+j.running_partition+', target='+j.target_partition+', error='+j.error_name+'('+j.error_code+')';g.textContent='Next step: '+j.guidance;}");
   body += F("f.addEventListener('submit',function(e){e.preventDefault();const file=document.getElementById('fw').files[0];if(!file){st.textContent='Stage: failed';s.textContent='Status: select firmware.bin first';g.textContent='Next step: choose firmware.bin then retry.';return;}const data=new FormData();data.append('firmware',file);const x=new XMLHttpRequest();x.open('POST','/ota',true);st.textContent='Stage: upload';s.textContent='Status: starting upload';g.textContent='Next step: keep this page open until a final result is shown.';x.upload.onprogress=function(ev){if(ev.lengthComputable){const pct=Math.round((ev.loaded/ev.total)*100);p.textContent='Upload progress: '+pct+'%';if(pct>=100){st.textContent='Stage: upload_complete';s.textContent='Status: upload complete; waiting for device validation/apply';}}};x.onreadystatechange=function(){if(x.readyState===4&&x.status>=400){s.textContent='Status: '+x.responseText;}};x.onerror=function(){st.textContent='Stage: failed';s.textContent='Status: upload failed (network error)';g.textContent='Next step: keep device powered, reconnect to AP, and retry.';};x.send(data);});");
   body += F("setInterval(function(){fetch('/api/ota/status').then(r=>r.json()).then(setUi).catch(()=>{});},800);");
   body += F("</script></body></html>");
@@ -536,7 +628,7 @@ void handleOtaPage() {
 String otaGuidanceForUpdateError(uint8_t error) {
   switch (error) {
     case UPDATE_ERROR_READ:
-      return F("Device could not re-read written firmware bytes. Reboot and retry with a known-good firmware.bin for esp32-s3-devkitc-1-n32r16v. If repeated, reflash over USB once, then retry OTA.");
+      return F("Device could not re-read written firmware bytes during apply. Confirm release asset/build parity for esp32-s3-devkitc-1-n32r16v, then reboot and retry. If repeated, USB-flash once and retry OTA.");
     case UPDATE_ERROR_SPACE:
       return F("Firmware image is too large for the OTA partition. Build for esp32-s3-devkitc-1-n32r16v and verify partition settings.");
     case UPDATE_ERROR_MAGIC_BYTE:
@@ -677,37 +769,48 @@ void handleOtaDone() {
 void handleOtaChunk() {
   HTTPUpload& upload = server.upload();
   if (upload.status == UPLOAD_FILE_START) {
+    refreshOtaDiagnostics();
     gOtaStatus.inProgress = true;
     gOtaStatus.success = false;
     gOtaStatus.hasResult = false;
     gOtaStatus.received = 0;
     gOtaStatus.expected = static_cast<size_t>(upload.totalSize);
+    gOtaStatus.errorCode = 0;
+    gOtaStatus.errorName = F("none");
     gOtaStatus.stage = F("upload");
     gOtaStatus.message = F("starting OTA upload");
     gOtaStatus.guidance = F("Keep this page open while upload, validation, and apply complete.");
     gOtaRestartPending = false;
     const size_t updateSize = gOtaStatus.expected > 0 ? gOtaStatus.expected : UPDATE_SIZE_UNKNOWN;
     if (!Update.begin(updateSize, U_FLASH)) {
+      const uint8_t error = Update.getError();
       gOtaStatus.inProgress = false;
       gOtaStatus.success = false;
       gOtaStatus.hasResult = true;
+      gOtaStatus.errorCode = error;
+      gOtaStatus.errorName = Update.errorString();
       gOtaStatus.stage = F("failed");
-      gOtaStatus.message = F("OTA failed: unable to start update");
-      gOtaStatus.guidance = F("Reboot and retry using firmware.bin built for esp32-s3-devkitc-1-n32r16v.");
+      gOtaStatus.message = String(F("OTA failed: unable to start update: ")) + Update.errorString();
+      gOtaStatus.guidance = String(F("Confirm firmware target ")) + kExpectedBoardTarget + F(" and retry. If this repeats, verify release build parity and partition diagnostics on this page.");
       Serial.println(F("OTA: BEGIN FAILED"));
+      Serial.printf("OTA: ERROR CODE=%u\n", static_cast<unsigned>(error));
     }
   } else if (upload.status == UPLOAD_FILE_WRITE) {
     if (!gOtaStatus.inProgress) return;
     const size_t written = Update.write(upload.buf, upload.currentSize);
     if (written != upload.currentSize) {
+      const uint8_t error = Update.getError();
       Update.abort();
       gOtaStatus.inProgress = false;
       gOtaStatus.success = false;
       gOtaStatus.hasResult = true;
+      gOtaStatus.errorCode = error;
+      gOtaStatus.errorName = Update.errorString();
       gOtaStatus.stage = F("failed");
-      gOtaStatus.message = F("OTA failed: write error");
+      gOtaStatus.message = String(F("OTA failed: write error: ")) + Update.errorString();
       gOtaStatus.guidance = F("Reboot and retry. If repeated, reflash over USB and verify firmware.bin target.");
       Serial.println(F("OTA: WRITE FAILED"));
+      Serial.printf("OTA: ERROR CODE=%u\n", static_cast<unsigned>(error));
       return;
     }
     gOtaStatus.received += upload.currentSize;
@@ -732,6 +835,8 @@ void handleOtaChunk() {
       gOtaStatus.inProgress = false;
       gOtaStatus.success = false;
       gOtaStatus.hasResult = true;
+      gOtaStatus.errorCode = 255;
+      gOtaStatus.errorName = F("size_mismatch");
       gOtaStatus.stage = F("failed");
       gOtaStatus.message = F("OTA failed: upload size mismatch before validation/apply");
       gOtaStatus.guidance = F("Retry OTA on a stable connection. Keep this page open until the final status appears.");
@@ -746,6 +851,8 @@ void handleOtaChunk() {
       gOtaStatus.inProgress = false;
       gOtaStatus.success = true;
       gOtaStatus.hasResult = true;
+      gOtaStatus.errorCode = 0;
+      gOtaStatus.errorName = F("none");
       gOtaStatus.stage = F("success");
       gOtaStatus.message = F("OTA successful. Device will reboot.");
       gOtaStatus.guidance = F("Wait for reboot, reconnect to ESP32-MEDIA AP, then verify app version.");
@@ -757,6 +864,8 @@ void handleOtaChunk() {
       gOtaStatus.inProgress = false;
       gOtaStatus.success = false;
       gOtaStatus.hasResult = true;
+      gOtaStatus.errorCode = error;
+      gOtaStatus.errorName = Update.errorString();
       gOtaStatus.stage = F("failed");
       gOtaStatus.message = String(F("OTA failed during validation/apply: ")) + Update.errorString();
       gOtaStatus.guidance = otaGuidanceForUpdateError(error);
@@ -768,6 +877,8 @@ void handleOtaChunk() {
     gOtaStatus.inProgress = false;
     gOtaStatus.success = false;
     gOtaStatus.hasResult = true;
+    gOtaStatus.errorCode = UPDATE_ERROR_ABORT;
+    gOtaStatus.errorName = F("aborted");
     gOtaStatus.stage = F("failed");
     gOtaStatus.message = F("OTA failed: upload interrupted or aborted");
     gOtaStatus.guidance = F("Keep device powered, reconnect, and retry OTA with a stable network.");
@@ -823,38 +934,26 @@ void configureRoutes() {
 bool mountSd() {
   setSdStatus(SdFailureStage::kInitBusFailure, false, F("not initialized"));
   SPI.begin(kSdSckPin, kSdMisoPin, kSdMosiPin, kSdCsPin);
-  if (!SD.begin(kSdCsPin, SPI, kSdSpiHz, kSdMountPoint, 5, false)) {
-    const uint8_t cardType = SD.cardType();
-    if (cardType == CARD_NONE) {
-      setSdStatus(SdFailureStage::kCardCommFailure, false, F("card not detected during SD.begin"));
-    } else {
-      setSdStatus(SdFailureStage::kInitBusFailure, false, F("SD.begin failed"));
-    }
+  String detail;
+  SdFailureStage stage = SdFailureStage::kInitBusFailure;
+  bool capacityKnown = false;
+  uint32_t usedHz = kSdSpiHz;
+  if (!mountSdWithRetries(false, detail, stage, capacityKnown, usedHz)) {
+    setSdStatus(stage, false, detail);
     Serial.println(F("SD: MOUNT FAILED"));
     Serial.printf("SD: DIAG STAGE=%s\n", sdStageCode(gSdStatus.stage).c_str());
+    Serial.printf("SD: DETAIL=%s\n", detail.c_str());
     return false;
   }
 
   Serial.println(F("SD: MOUNTED"));
-  if (SD.cardType() == CARD_NONE) {
-    setSdStatus(SdFailureStage::kCardCommFailure, false, F("mounted bus but card type is none"));
-    Serial.println(F("SD: TIMEOUT"));
-    Serial.printf("SD: DIAG STAGE=%s\n", sdStageCode(gSdStatus.stage).c_str());
-    return false;
-  }
-  const bool capacityKnown = SD.totalBytes() > 0;
-  File root = SD.open("/");
-  if (!root || !root.isDirectory()) {
-    setSdStatus(SdFailureStage::kReadRootFailure, false, F("root open failed after mount"));
-    Serial.printf("SD: DIAG STAGE=%s\n", sdStageCode(gSdStatus.stage).c_str());
-    return false;
-  }
   if (!capacityKnown) {
     Serial.println(F("SD: CAPACITY UNKNOWN (continuing because root access works)"));
-    setSdStatus(SdFailureStage::kOk, true, F("mounted and root listed (capacity query unavailable)"));
+    setSdStatus(SdFailureStage::kOk, true, detail);
   } else {
-    setSdStatus(SdFailureStage::kOk, true, F("mounted and root listed"));
+    setSdStatus(SdFailureStage::kOk, true, detail);
   }
+  Serial.printf("SD: SPI %s\n", sdSpiSpeedLabel(usedHz).c_str());
   Serial.println(F("SD: READ OK"));
   Serial.println(F("SD: LIST OK"));
   return true;
@@ -876,6 +975,10 @@ void setup() {
   Serial.begin(115200);
   delay(200);
   Serial.println(F("BOOT: OK"));
+  refreshOtaDiagnostics();
+  Serial.printf("OTA: BUILD ENV=%s BOARD=%s\n", gOtaStatus.buildEnv.c_str(), kExpectedBoardTarget);
+  Serial.printf("OTA: RUNNING PARTITION=%s\n", gOtaStatus.runningPartition.c_str());
+  Serial.printf("OTA: TARGET PARTITION=%s\n", gOtaStatus.targetPartition.c_str());
 
   if (mountSd()) {
     // Boot smoke regex expects RTC line; we only emit a placeholder in v0.1 firmware.

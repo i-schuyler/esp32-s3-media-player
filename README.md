@@ -56,6 +56,7 @@ pio device monitor -b 115200
 - Before merging to `main`, prepend a changelog release entry using `## [vX.Y.Z] - YYYY-MM-DD`.
 - After merge, GitHub Actions (`.github/workflows/release.yml`) automatically tags that version, creates a GitHub release, and uploads `media_server_vX_X_X.bin` built for `esp32-s3-devkitc-1-n32r16v`.
 - If an existing release is missing `media_server_vX_X_X.bin`, run `.github/workflows/manual-release-attach.yml` manually with the existing release tag (for example `v0.1.3`).
+- Release automation verifies env/board/partition parity with the same `pio run -e esp32-s3-devkitc-1-n32r16v` USB build path before publishing artifacts.
 
 ## License
 MIT (see `LICENSE`).
