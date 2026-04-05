@@ -2,9 +2,9 @@
 #include <FS.h>
 #include <SD.h>
 #include <SPI.h>
-#include <Update.h>
 #include <WebServer.h>
 #include <WiFi.h>
+#include <esp_err.h>
 #include <esp_ota_ops.h>
 #include <cstring>
 
@@ -24,6 +24,9 @@ constexpr const char* kSdFormatConfirmToken = "FORMAT";
 constexpr const char* kDefaultApPassword = "12345678";
 constexpr const char* kExpectedBoardTarget = "esp32-s3-devkitc-1-n32r16v";
 constexpr size_t kChunkSize = 2048;
+constexpr uint8_t kEspImageMagicByte = 0xE9;
+constexpr int32_t kOtaErrorSizeMismatch = 255;
+constexpr int32_t kOtaErrorBadMagic = 254;
 
 struct OtaStatus {
   bool inProgress = false;
@@ -31,7 +34,7 @@ struct OtaStatus {
   bool hasResult = false;
   size_t received = 0;
   size_t expected = 0;
-  uint8_t errorCode = 0;
+  int32_t errorCode = 0;
   String stage = F("idle");
   String errorName = F("none");
   String message = F("idle");
@@ -41,7 +44,15 @@ struct OtaStatus {
   String buildEnv = F("unknown");
 };
 
+struct OtaSession {
+  bool active = false;
+  bool headerChecked = false;
+  esp_ota_handle_t handle = 0;
+  const esp_partition_t* target = nullptr;
+};
+
 OtaStatus gOtaStatus;
+OtaSession gOtaSession;
 bool gOtaRestartPending = false;
 unsigned long gOtaRestartAtMs = 0;
 
@@ -124,6 +135,67 @@ void refreshOtaDiagnostics() {
   const esp_partition_t* target = esp_ota_get_next_update_partition(nullptr);
   gOtaStatus.runningPartition = otaPartitionSummary(running);
   gOtaStatus.targetPartition = otaPartitionSummary(target);
+}
+
+String otaErrorNameForEspErr(esp_err_t error) {
+  switch (error) {
+    case ESP_OK:
+      return F("none");
+    case ESP_ERR_FLASH_OP_FAIL:
+      return F("Flash Read Failed");
+    case ESP_ERR_FLASH_OP_TIMEOUT:
+      return F("Flash Timeout");
+    case ESP_ERR_OTA_VALIDATE_FAILED:
+      return F("Validation Failed");
+    case ESP_ERR_INVALID_SIZE:
+      return F("Invalid Size");
+    case ESP_ERR_INVALID_ARG:
+      return F("Invalid Argument");
+    case ESP_ERR_NOT_FOUND:
+      return F("Not Found");
+    case ESP_ERR_NO_MEM:
+      return F("No Memory");
+    default:
+      return String(esp_err_to_name(error));
+  }
+}
+
+String otaGuidanceForEspErr(esp_err_t error) {
+  switch (error) {
+    case ESP_ERR_FLASH_OP_FAIL:
+    case ESP_ERR_FLASH_OP_TIMEOUT:
+      return F("Flash operation failed during validation/apply. Confirm release asset/build parity for esp32-s3-devkitc-1-n32r16v, reboot, and retry. If repeated, USB-flash once and retry OTA.");
+    case ESP_ERR_OTA_VALIDATE_FAILED:
+      return F("Firmware image validation failed. Re-download/rebuild firmware.bin for esp32-s3-devkitc-1-n32r16v and retry.");
+    case ESP_ERR_INVALID_SIZE:
+      return F("Firmware size is invalid for OTA. Rebuild firmware.bin and retry.");
+    case ESP_ERR_NOT_FOUND:
+      return F("No OTA target partition available. Verify partition table for esp32-s3-devkitc-1-n32r16v.");
+    case ESP_ERR_NO_MEM:
+      return F("Not enough memory to continue OTA. Reboot and retry with a stable connection.");
+    case ESP_ERR_INVALID_ARG:
+      return F("Invalid OTA request. Retry from the OTA page using firmware.bin.");
+    default:
+      return F("Retry with a known-good firmware.bin. If it still fails, capture serial logs for deeper diagnostics.");
+  }
+}
+
+void setOtaFailure(const String& stage, int32_t errorCode, const String& errorName, const String& message, const String& guidance) {
+  gOtaStatus.inProgress = false;
+  gOtaStatus.success = false;
+  gOtaStatus.hasResult = true;
+  gOtaStatus.errorCode = errorCode;
+  gOtaStatus.errorName = errorName;
+  gOtaStatus.stage = stage;
+  gOtaStatus.message = message;
+  gOtaStatus.guidance = guidance;
+}
+
+void resetOtaSession() {
+  gOtaSession.active = false;
+  gOtaSession.headerChecked = false;
+  gOtaSession.handle = 0;
+  gOtaSession.target = nullptr;
 }
 
 String sdSpiSpeedLabel(uint32_t hz) {
@@ -563,7 +635,7 @@ void handleOtaStatusApi() {
   json += ",\"expected\":";
   json += String(static_cast<unsigned long>(gOtaStatus.expected));
   json += ",\"error_code\":";
-  json += String(static_cast<unsigned>(gOtaStatus.errorCode));
+  json += String(static_cast<long>(gOtaStatus.errorCode));
   json += ",\"stage\":\"";
   json += jsonEscape(gOtaStatus.stage);
   json += "\",\"error_name\":\"";
@@ -631,36 +703,6 @@ void handleOtaPage() {
   body += F("setInterval(function(){fetch('/api/ota/status').then(r=>r.json()).then(setUi).catch(()=>{});},800);");
   body += F("</script></body></html>");
   server.send(200, F("text/html"), body);
-}
-
-String otaGuidanceForUpdateError(uint8_t error) {
-  switch (error) {
-    case UPDATE_ERROR_READ:
-      return F("Device could not re-read written firmware bytes during apply. Confirm release asset/build parity for esp32-s3-devkitc-1-n32r16v, then reboot and retry. If repeated, USB-flash once and retry OTA.");
-    case UPDATE_ERROR_SPACE:
-      return F("Firmware image is too large for the OTA partition. Build for esp32-s3-devkitc-1-n32r16v and verify partition settings.");
-    case UPDATE_ERROR_MAGIC_BYTE:
-      return F("Selected file is not a valid ESP32 app image. Use firmware.bin from a successful build.");
-    case UPDATE_ERROR_MD5:
-      return F("Firmware validation failed. Re-download/rebuild firmware.bin and retry.");
-    case UPDATE_ERROR_STREAM:
-      return F("Upload stream interrupted. Keep device powered, keep browser tab open, and retry on a stable connection.");
-    case UPDATE_ERROR_WRITE:
-    case UPDATE_ERROR_ERASE:
-      return F("Flash write/erase failed. Reboot device and retry. If repeated, reflash over USB to recover.");
-    case UPDATE_ERROR_ACTIVATE:
-      return F("Firmware written but activation failed. Reboot and retry with a known-good firmware.bin.");
-    case UPDATE_ERROR_NO_PARTITION:
-      return F("No OTA partition available. Verify build target and partition table for esp32-s3-devkitc-1-n32r16v.");
-    case UPDATE_ERROR_SIZE:
-      return F("Upload size is invalid for OTA. Rebuild firmware.bin and retry.");
-    case UPDATE_ERROR_ABORT:
-      return F("OTA was aborted. Retry the update and keep power/network stable.");
-    case UPDATE_ERROR_BAD_ARGUMENT:
-      return F("Invalid OTA request. Retry from the OTA page using firmware.bin.");
-    default:
-      return F("Retry with a known-good firmware.bin. If it still fails, capture serial logs for deeper diagnostics.");
-  }
 }
 
 void handleDownload() {
@@ -767,6 +809,10 @@ void handleUploadDone() {
 }
 
 void handleOtaDone() {
+  if (gOtaStatus.inProgress) {
+    server.send(202, F("text/plain"), gOtaStatus.message);
+    return;
+  }
   if (gOtaStatus.success) {
     server.send(200, F("text/plain"), gOtaStatus.message);
   } else {
@@ -777,6 +823,10 @@ void handleOtaDone() {
 void handleOtaChunk() {
   HTTPUpload& upload = server.upload();
   if (upload.status == UPLOAD_FILE_START) {
+    if (gOtaSession.active) {
+      esp_ota_abort(gOtaSession.handle);
+      resetOtaSession();
+    }
     refreshOtaDiagnostics();
     gOtaStatus.inProgress = true;
     gOtaStatus.success = false;
@@ -789,38 +839,86 @@ void handleOtaChunk() {
     gOtaStatus.message = F("starting OTA upload");
     gOtaStatus.guidance = F("Keep this page open while upload, validation, and apply complete.");
     gOtaRestartPending = false;
-    const size_t updateSize = gOtaStatus.expected > 0 ? gOtaStatus.expected : UPDATE_SIZE_UNKNOWN;
-    if (!Update.begin(updateSize, U_FLASH)) {
-      const uint8_t error = Update.getError();
-      gOtaStatus.inProgress = false;
-      gOtaStatus.success = false;
-      gOtaStatus.hasResult = true;
-      gOtaStatus.errorCode = error;
-      gOtaStatus.errorName = Update.errorString();
-      gOtaStatus.stage = F("failed");
-      gOtaStatus.message = String(F("OTA failed: unable to start update: ")) + Update.errorString();
-      gOtaStatus.guidance = String(F("Confirm firmware target ")) + kExpectedBoardTarget + F(" and retry. If this repeats, verify release build parity and partition diagnostics on this page.");
-      Serial.println(F("OTA: BEGIN FAILED"));
-      Serial.printf("OTA: ERROR CODE=%u\n", static_cast<unsigned>(error));
-    }
-  } else if (upload.status == UPLOAD_FILE_WRITE) {
-    if (!gOtaStatus.inProgress) return;
-    const size_t written = Update.write(upload.buf, upload.currentSize);
-    if (written != upload.currentSize) {
-      const uint8_t error = Update.getError();
-      Update.abort();
-      gOtaStatus.inProgress = false;
-      gOtaStatus.success = false;
-      gOtaStatus.hasResult = true;
-      gOtaStatus.errorCode = error;
-      gOtaStatus.errorName = Update.errorString();
-      gOtaStatus.stage = F("failed");
-      gOtaStatus.message = String(F("OTA failed: write error: ")) + Update.errorString();
-      gOtaStatus.guidance = F("Reboot and retry. If repeated, reflash over USB and verify firmware.bin target.");
-      Serial.println(F("OTA: WRITE FAILED"));
-      Serial.printf("OTA: ERROR CODE=%u\n", static_cast<unsigned>(error));
+
+    gOtaSession.target = esp_ota_get_next_update_partition(nullptr);
+    if (gOtaSession.target == nullptr) {
+      setOtaFailure(
+          F("precheck_failed"),
+          ESP_ERR_NOT_FOUND,
+          otaErrorNameForEspErr(ESP_ERR_NOT_FOUND),
+          F("OTA blocked before upload: no OTA target partition available"),
+          otaGuidanceForEspErr(ESP_ERR_NOT_FOUND));
+      Serial.println(F("OTA: PRECHECK FAILED (NO TARGET PARTITION)"));
       return;
     }
+
+    if (gOtaStatus.expected > 0 && gOtaStatus.expected > gOtaSession.target->size) {
+      const String msg = String(F("OTA blocked before validation/apply: firmware larger than target partition (expected=")) +
+                         String(static_cast<unsigned long>(gOtaStatus.expected)) +
+                         F(", target=") +
+                         String(static_cast<unsigned long>(gOtaSession.target->size)) +
+                         F(")");
+      setOtaFailure(
+          F("precheck_failed"),
+          ESP_ERR_INVALID_SIZE,
+          otaErrorNameForEspErr(ESP_ERR_INVALID_SIZE),
+          msg,
+          otaGuidanceForEspErr(ESP_ERR_INVALID_SIZE));
+      Serial.println(F("OTA: PRECHECK FAILED (SIZE > TARGET)"));
+      return;
+    }
+
+    const size_t updateSize = gOtaStatus.expected > 0 ? gOtaStatus.expected : OTA_SIZE_UNKNOWN;
+    const esp_err_t beginErr = esp_ota_begin(gOtaSession.target, updateSize, &gOtaSession.handle);
+    if (beginErr != ESP_OK) {
+      setOtaFailure(
+          F("failed"),
+          beginErr,
+          otaErrorNameForEspErr(beginErr),
+          String(F("OTA failed: unable to start update: ")) + otaErrorNameForEspErr(beginErr),
+          String(F("Confirm firmware target ")) + kExpectedBoardTarget +
+              F(" and retry. If this repeats, verify release build parity and partition diagnostics on this page."));
+      Serial.println(F("OTA: BEGIN FAILED"));
+      Serial.printf("OTA: ERROR CODE=%ld\n", static_cast<long>(beginErr));
+      return;
+    }
+
+    gOtaSession.active = true;
+    gOtaSession.headerChecked = false;
+  } else if (upload.status == UPLOAD_FILE_WRITE) {
+    if (!gOtaStatus.inProgress || !gOtaSession.active) return;
+
+    if (!gOtaSession.headerChecked && upload.currentSize > 0) {
+      gOtaSession.headerChecked = true;
+      if (upload.buf[0] != kEspImageMagicByte) {
+        esp_ota_abort(gOtaSession.handle);
+        resetOtaSession();
+        setOtaFailure(
+            F("precheck_failed"),
+            kOtaErrorBadMagic,
+            F("invalid_image_header"),
+            F("OTA blocked before validation/apply: invalid ESP image header"),
+            F("Selected file is not a valid ESP32 app image. Use firmware.bin built for esp32-s3-devkitc-1-n32r16v."));
+        Serial.println(F("OTA: PRECHECK FAILED (MAGIC BYTE)"));
+        return;
+      }
+    }
+
+    const esp_err_t writeErr = esp_ota_write(gOtaSession.handle, upload.buf, upload.currentSize);
+    if (writeErr != ESP_OK) {
+      esp_ota_abort(gOtaSession.handle);
+      resetOtaSession();
+      setOtaFailure(
+          F("failed"),
+          writeErr,
+          otaErrorNameForEspErr(writeErr),
+          String(F("OTA failed: write error: ")) + otaErrorNameForEspErr(writeErr),
+          F("Reboot and retry. If repeated, reflash over USB and verify firmware.bin target."));
+      Serial.println(F("OTA: WRITE FAILED"));
+      Serial.printf("OTA: ERROR CODE=%ld\n", static_cast<long>(writeErr));
+      return;
+    }
+
     gOtaStatus.received += upload.currentSize;
     if (gOtaStatus.expected > 0) {
       const unsigned long pct = static_cast<unsigned long>((gOtaStatus.received * 100UL) / gOtaStatus.expected);
@@ -837,25 +935,41 @@ void handleOtaChunk() {
       gOtaStatus.message = F("uploading firmware");
     }
   } else if (upload.status == UPLOAD_FILE_END) {
-    if (!gOtaStatus.inProgress) return;
+    if (!gOtaStatus.inProgress || !gOtaSession.active) return;
     if (gOtaStatus.expected > 0 && gOtaStatus.received != gOtaStatus.expected) {
-      Update.abort();
-      gOtaStatus.inProgress = false;
-      gOtaStatus.success = false;
-      gOtaStatus.hasResult = true;
-      gOtaStatus.errorCode = 255;
-      gOtaStatus.errorName = F("size_mismatch");
-      gOtaStatus.stage = F("failed");
-      gOtaStatus.message = F("OTA failed: upload size mismatch before validation/apply");
-      gOtaStatus.guidance = F("Retry OTA on a stable connection. Keep this page open until the final status appears.");
+      esp_ota_abort(gOtaSession.handle);
+      resetOtaSession();
+      setOtaFailure(
+          F("failed"),
+          kOtaErrorSizeMismatch,
+          F("size_mismatch"),
+          F("OTA failed: upload size mismatch before validation/apply"),
+          F("Retry OTA on a stable connection. Keep this page open until the final status appears."));
       Serial.println(F("OTA: SIZE MISMATCH"));
       return;
     }
+
     gOtaStatus.stage = F("validate_apply");
     gOtaStatus.message = F("upload complete, validating and applying firmware");
     gOtaStatus.guidance = F("Wait for final OTA result.");
-    const bool allowIncomplete = gOtaStatus.expected == 0;
-    if (Update.end(allowIncomplete)) {
+
+    const esp_err_t endErr = esp_ota_end(gOtaSession.handle);
+    if (endErr != ESP_OK) {
+      resetOtaSession();
+      setOtaFailure(
+          F("failed"),
+          endErr,
+          otaErrorNameForEspErr(endErr),
+          String(F("OTA failed during validation/apply: ")) + otaErrorNameForEspErr(endErr),
+          otaGuidanceForEspErr(endErr));
+      Serial.println(F("OTA: END FAILED"));
+      Serial.printf("OTA: ERROR CODE=%ld\n", static_cast<long>(endErr));
+      return;
+    }
+
+    const esp_err_t bootErr = esp_ota_set_boot_partition(gOtaSession.target);
+    resetOtaSession();
+    if (bootErr == ESP_OK) {
       gOtaStatus.inProgress = false;
       gOtaStatus.success = true;
       gOtaStatus.hasResult = true;
@@ -868,28 +982,26 @@ void handleOtaChunk() {
       gOtaRestartAtMs = millis() + 1500;
       Serial.println(F("OTA: SUCCESS"));
     } else {
-      const uint8_t error = Update.getError();
-      gOtaStatus.inProgress = false;
-      gOtaStatus.success = false;
-      gOtaStatus.hasResult = true;
-      gOtaStatus.errorCode = error;
-      gOtaStatus.errorName = Update.errorString();
-      gOtaStatus.stage = F("failed");
-      gOtaStatus.message = String(F("OTA failed during validation/apply: ")) + Update.errorString();
-      gOtaStatus.guidance = otaGuidanceForUpdateError(error);
-      Serial.println(F("OTA: END FAILED"));
-      Serial.printf("OTA: ERROR CODE=%u\n", static_cast<unsigned>(error));
+      setOtaFailure(
+          F("failed"),
+          bootErr,
+          otaErrorNameForEspErr(bootErr),
+          String(F("OTA failed during validation/apply: ")) + otaErrorNameForEspErr(bootErr),
+          otaGuidanceForEspErr(bootErr));
+      Serial.println(F("OTA: ACTIVATE FAILED"));
+      Serial.printf("OTA: ERROR CODE=%ld\n", static_cast<long>(bootErr));
     }
   } else if (upload.status == UPLOAD_FILE_ABORTED) {
-    Update.abort();
-    gOtaStatus.inProgress = false;
-    gOtaStatus.success = false;
-    gOtaStatus.hasResult = true;
-    gOtaStatus.errorCode = UPDATE_ERROR_ABORT;
-    gOtaStatus.errorName = F("aborted");
-    gOtaStatus.stage = F("failed");
-    gOtaStatus.message = F("OTA failed: upload interrupted or aborted");
-    gOtaStatus.guidance = F("Keep device powered, reconnect, and retry OTA with a stable network.");
+    if (gOtaSession.active) {
+      esp_ota_abort(gOtaSession.handle);
+      resetOtaSession();
+    }
+    setOtaFailure(
+        F("failed"),
+        ESP_ERR_INVALID_STATE,
+        F("aborted"),
+        F("OTA failed: upload interrupted or aborted"),
+        F("Keep device powered, reconnect, and retry OTA with a stable network."));
     Serial.println(F("OTA: ABORTED"));
   }
 }

@@ -4,6 +4,10 @@ set -euo pipefail
 env_name="${1:-esp32-s3-devkitc-1-n32r16v}"
 expected_board="${2:-esp32-s3-devkitc-1-n32r16v}"
 expected_partitions="${3:-partitions/partitions_32mb.csv}"
+expected_framework="${4:-arduino}"
+expected_flash_mode="${5:-opi}"
+expected_memory_type="${6:-opi_opi}"
+expected_psram_type="${7:-opi}"
 
 if [[ ! -f platformio.ini ]]; then
   echo "::error::platformio.ini not found."
@@ -21,21 +25,46 @@ if ! grep -Eq "^\[env:${env_name}\]$" platformio.ini; then
   exit 1
 fi
 
-board_value="$(awk -v target="[env:${env_name}]" '
+read_env_value() {
+  local key="$1"
+  awk -v target="[env:${env_name}]" -v key="$key" '
   $0==target {in_env=1; next}
   in_env && /^\[/ {in_env=0}
-  in_env && $1=="board" {print $3; exit}
-' platformio.ini)"
+  in_env && $1==key {print $3; exit}
+' platformio.ini
+}
+
+board_value="$(read_env_value board)"
 if [[ "$board_value" != "$expected_board" ]]; then
   echo "::error::board mismatch in [env:${env_name}]. Expected ${expected_board}, found ${board_value:-<empty>}"
   exit 1
 fi
 
-partitions_value="$(awk -v target="[env:${env_name}]" '
-  $0==target {in_env=1; next}
-  in_env && /^\[/ {in_env=0}
-  in_env && $1=="board_build.partitions" {print $3; exit}
-' platformio.ini)"
+framework_value="$(read_env_value framework)"
+if [[ "$framework_value" != "$expected_framework" ]]; then
+  echo "::error::framework mismatch in [env:${env_name}]. Expected ${expected_framework}, found ${framework_value:-<empty>}"
+  exit 1
+fi
+
+flash_mode_value="$(read_env_value board_build.flash_mode)"
+if [[ "$flash_mode_value" != "$expected_flash_mode" ]]; then
+  echo "::error::board_build.flash_mode mismatch in [env:${env_name}]. Expected ${expected_flash_mode}, found ${flash_mode_value:-<empty>}"
+  exit 1
+fi
+
+memory_type_value="$(read_env_value board_build.memory_type)"
+if [[ "$memory_type_value" != "$expected_memory_type" ]]; then
+  echo "::error::board_build.memory_type mismatch in [env:${env_name}]. Expected ${expected_memory_type}, found ${memory_type_value:-<empty>}"
+  exit 1
+fi
+
+psram_type_value="$(read_env_value board_build.psram_type)"
+if [[ "$psram_type_value" != "$expected_psram_type" ]]; then
+  echo "::error::board_build.psram_type mismatch in [env:${env_name}]. Expected ${expected_psram_type}, found ${psram_type_value:-<empty>}"
+  exit 1
+fi
+
+partitions_value="$(read_env_value board_build.partitions)"
 if [[ "$partitions_value" != "$expected_partitions" ]]; then
   echo "::error::board_build.partitions mismatch in [env:${env_name}]. Expected ${expected_partitions}, found ${partitions_value:-<empty>}"
   exit 1
@@ -82,5 +111,4 @@ if ! grep -Fq "pio run -e ${env_name} -t upload" README.md; then
   exit 1
 fi
 
-echo "PARITY: OK env=${env_name} board=${expected_board} partitions=${expected_partitions} app0=${app0_size_hex} app1=${app1_size_hex}"
-
+echo "PARITY: OK env=${env_name} framework=${expected_framework} board=${expected_board} flash_mode=${expected_flash_mode} memory_type=${expected_memory_type} psram_type=${expected_psram_type} partitions=${expected_partitions} app0=${app0_size_hex} app1=${app1_size_hex}"
