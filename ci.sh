@@ -37,6 +37,7 @@ echo "OK: required policy files present."
 
 if [[ -f "platformio.ini" ]]; then
   echo "Detected PlatformIO project; running build."
+  bash scripts/verify_release_build_parity.sh
   python3 -m pip install --quiet --upgrade pip
   python3 -m pip install --quiet platformio
   pio run -e esp32-s3-devkitc-1-n32r16v

@@ -64,7 +64,7 @@ This is a placeholder until we add local audio-out. For now, streaming playback 
 Manual verification:
 - Open `http://192.168.4.1/ota`.
 - Upload a valid `firmware.bin` for `esp32-s3-devkitc-1-n32r16v`.
-- Expect browser upload progress updates plus explicit OTA stage text (upload, upload_complete, validate/apply, final success/failure).
+- Expect browser upload progress updates plus explicit OTA stage text (upload, upload_complete, precheck_failed when blocked early, validate/apply, final success/failure).
 - Expect OTA diagnostics to include build env and running/target partition details for failure triage.
 - Success path: status indicates success and device reboots.
 - Failure path (interrupt upload/network or invalid image): browser status indicates failure with actionable next steps and app remains reachable after retry.

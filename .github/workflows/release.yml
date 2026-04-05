@@ -16,6 +16,10 @@ jobs:
       PIO_ENV: esp32-s3-devkitc-1-n32r16v
       EXPECTED_BOARD: esp32-s3-devkitc-1-n32r16v
       EXPECTED_PARTITIONS: partitions/partitions_32mb.csv
+      EXPECTED_FRAMEWORK: arduino
+      EXPECTED_FLASH_MODE: opi
+      EXPECTED_MEMORY_TYPE: opi_opi
+      EXPECTED_PSRAM_TYPE: opi
     steps:
       - name: Checkout merged commit
         uses: actions/checkout@v4
@@ -75,7 +79,14 @@ jobs:
             echo "::error::Failed to stamp firmware UI version ${version} into src/firmware_version.h"
             exit 1
           fi
-          bash scripts/verify_release_build_parity.sh "$PIO_ENV" "$EXPECTED_BOARD" "$EXPECTED_PARTITIONS"
+          bash scripts/verify_release_build_parity.sh \
+            "$PIO_ENV" \
+            "$EXPECTED_BOARD" \
+            "$EXPECTED_PARTITIONS" \
+            "$EXPECTED_FRAMEWORK" \
+            "$EXPECTED_FLASH_MODE" \
+            "$EXPECTED_MEMORY_TYPE" \
+            "$EXPECTED_PSRAM_TYPE"
           python3 -m pip install --quiet --upgrade pip
           python3 -m pip install --quiet platformio
           pio run -e "$PIO_ENV"
