@@ -22,6 +22,17 @@ for f in "${required[@]}"; do
   fi
 done
 
+if grep -Fq '#include "firmware_version.h"' src/main.cpp; then
+  if [[ ! -f "src/firmware_version.h" ]]; then
+    echo "MISSING: src/firmware_version.h (required by src/main.cpp include)"
+    exit 1
+  fi
+  if ! grep -Eq 'kFirmwareVersion[[:space:]]*=' src/firmware_version.h; then
+    echo "MISSING: kFirmwareVersion in src/firmware_version.h"
+    exit 1
+  fi
+fi
+
 echo "OK: required policy files present."
 
 if [[ -f "platformio.ini" ]]; then

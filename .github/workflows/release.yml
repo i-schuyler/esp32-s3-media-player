@@ -59,6 +59,22 @@ jobs:
       - name: Build firmware for esp32-s3-devkitc-1-n32r16v
         run: |
           set -euo pipefail
+          version="${{ steps.version.outputs.version }}"
+          if [[ ! -f src/firmware_version.h ]]; then
+            echo "::error::Missing src/firmware_version.h; cannot stamp release firmware version in UI."
+            exit 1
+          fi
+          cat > src/firmware_version.h <<EOF
+          #pragma once
+
+          namespace firmware {
+          inline constexpr const char* kFirmwareVersion = "${version}";
+          }  // namespace firmware
+          EOF
+          if ! grep -Fq "kFirmwareVersion = \"${version}\";" src/firmware_version.h; then
+            echo "::error::Failed to stamp firmware UI version ${version} into src/firmware_version.h"
+            exit 1
+          fi
           bash scripts/verify_release_build_parity.sh "$PIO_ENV" "$EXPECTED_BOARD" "$EXPECTED_PARTITIONS"
           python3 -m pip install --quiet --upgrade pip
           python3 -m pip install --quiet platformio
