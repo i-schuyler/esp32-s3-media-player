@@ -18,7 +18,9 @@ constexpr uint8_t kSdSckPin = 12;
 constexpr uint8_t kSdMisoPin = 11;
 constexpr uint8_t kSdMosiPin = 10;
 constexpr uint32_t kSdSpiHz = 4000000;
-constexpr uint32_t kSdSpiRetryHz[] = {kSdSpiHz, 2000000, 1000000, 400000};
+constexpr uint32_t kSdInitHz = 400000;
+constexpr uint8_t kSdInitClockBytes = 10;
+constexpr uint32_t kSdSpiRetryHz[] = {kSdInitHz, 1000000, 2000000, kSdSpiHz};
 constexpr const char* kSdMountPoint = "/sd";
 constexpr const char* kSdFormatConfirmToken = "FORMAT";
 constexpr const char* kDefaultApPassword = "12345678";
@@ -205,21 +207,62 @@ String sdSpiSpeedLabel(uint32_t hz) {
   return String(static_cast<unsigned long>(hz / 1000UL)) + F("kHz");
 }
 
+String sdCardTypeLabel(uint8_t cardType) {
+  switch (cardType) {
+    case CARD_MMC:
+      return F("mmc");
+    case CARD_SD:
+      return F("sdsc");
+    case CARD_SDHC:
+      return F("sdhc");
+    case CARD_NONE:
+      return F("none");
+    default:
+      return String(static_cast<unsigned long>(cardType));
+  }
+}
+
+String sdMisoIdleHint() {
+  return digitalRead(kSdMisoPin) == LOW ? F("miso_idle=low") : F("miso_idle=high");
+}
+
+void primeSdSpiBus() {
+  pinMode(kSdCsPin, OUTPUT);
+  pinMode(kSdSckPin, OUTPUT);
+  pinMode(kSdMosiPin, OUTPUT);
+  pinMode(kSdMisoPin, INPUT_PULLUP);
+  digitalWrite(kSdCsPin, HIGH);
+  digitalWrite(kSdSckPin, HIGH);
+  digitalWrite(kSdMosiPin, HIGH);
+  delay(2);
+
+  SPI.begin(kSdSckPin, kSdMisoPin, kSdMosiPin, kSdCsPin);
+  SPI.beginTransaction(SPISettings(kSdInitHz, MSBFIRST, SPI_MODE0));
+  for (uint8_t i = 0; i < kSdInitClockBytes; ++i) {
+    SPI.transfer(0xFF);
+  }
+  SPI.endTransaction();
+}
+
 bool mountSdAttempt(uint32_t hz, bool allowFormat, String& detail, SdFailureStage& stage, bool& capacityKnown) {
+  const String misoHint = sdMisoIdleHint();
   if (!SD.begin(kSdCsPin, SPI, hz, kSdMountPoint, 5, allowFormat)) {
-    if (SD.cardType() == CARD_NONE) {
+    const uint8_t cardType = SD.cardType();
+    if (cardType == CARD_NONE) {
       stage = SdFailureStage::kCardCommFailure;
-      detail = String(F("card not detected: SD.begin failed at ")) + sdSpiSpeedLabel(hz) + F(" (cardType=none)");
+      detail = String(F("card not detected: SD.begin failed at ")) + sdSpiSpeedLabel(hz) + F(" (cardType=none, ") + misoHint + F(")");
     } else {
       stage = SdFailureStage::kInitBusFailure;
-      detail = String(F("SD.begin failed at ")) + sdSpiSpeedLabel(hz);
+      detail = String(F("SD.begin failed at ")) + sdSpiSpeedLabel(hz) +
+               F(" after card response (cardType=") + sdCardTypeLabel(cardType) + F(", ") + misoHint + F(")");
     }
     return false;
   }
 
-  if (SD.cardType() == CARD_NONE) {
+  const uint8_t cardType = SD.cardType();
+  if (cardType == CARD_NONE) {
     stage = SdFailureStage::kCardCommFailure;
-    detail = String(F("card not detected after begin at ")) + sdSpiSpeedLabel(hz);
+    detail = String(F("card not detected after begin at ")) + sdSpiSpeedLabel(hz) + F(" (") + misoHint + F(")");
     return false;
   }
 
@@ -232,7 +275,8 @@ bool mountSdAttempt(uint32_t hz, bool allowFormat, String& detail, SdFailureStag
   root.close();
 
   capacityKnown = SD.totalBytes() > 0;
-  detail = String(F("mounted and root listed at ")) + sdSpiSpeedLabel(hz);
+  detail = String(F("mounted and root listed at ")) + sdSpiSpeedLabel(hz) +
+           F(" (cardType=") + sdCardTypeLabel(cardType) + F(")");
   if (!capacityKnown) {
     detail += F(" (capacity query unavailable)");
   }
@@ -248,6 +292,8 @@ bool mountSdWithRetries(bool allowFormat, String& detail, SdFailureStage& stage,
 
   for (const uint32_t hz : kSdSpiRetryHz) {
     SD.end();
+    SPI.end();
+    primeSdSpiBus();
     if (mountSdAttempt(hz, allowFormat, detail, stage, capacityKnown)) {
       usedHz = hz;
       return true;
@@ -295,7 +341,7 @@ String sdStageTitle(SdFailureStage stage) {
     case SdFailureStage::kOk:
       return F("SD is ready");
     case SdFailureStage::kInitBusFailure:
-      return F("SD init/pin bus failed");
+      return F("SD init failed after card response");
     case SdFailureStage::kCardCommFailure:
       return F("SD card not detected or not communicating");
     case SdFailureStage::kMountFsFailure:
@@ -311,9 +357,9 @@ String sdStageGuidance(SdFailureStage stage) {
     case SdFailureStage::kOk:
       return F("No action needed.");
     case SdFailureStage::kInitBusFailure:
-      return F("Check wiring and pins: CS=IO13, SCK=IO12, MISO=IO11, MOSI=IO10. Confirm 3.3V power and GND. Firmware already retries lower SPI speeds automatically.");
+      return F("Card responded but init/mount still failed. Reboot and retry, then verify CS=IO13, SCK=IO12, MISO=IO11, MOSI=IO10 and 3.3V/GND stability.");
     case SdFailureStage::kCardCommFailure:
-      return F("Re-seat or replace the card, confirm FAT32 formatting, and verify the card works on another device.");
+      return F("No reliable SPI card response. Re-seat card, verify FAT32, and inspect wiring/power. If detail shows miso_idle=low, check MISO short/pin conflict.");
     case SdFailureStage::kMountFsFailure:
       return F("Use a supported card/format (FAT32 recommended) and reformat the card if needed.");
     case SdFailureStage::kReadRootFailure:
@@ -559,14 +605,19 @@ bool formatSdToFatAndRemount() {
   }
 
   setSdFormatStatus(F("remounting"), F("creating FAT/FAT32 filesystem and remounting"), F("Wait for remount to complete."), true, false, false);
-  SD.end();
-  if (!SD.begin(kSdCsPin, SPI, kSdSpiHz, kSdMountPoint, 5, true)) {
-    setSdStatus(SdFailureStage::kMountFsFailure, false, F("format/remount begin failed"));
-    setSdFormatStatus(F("failed"), F("SD format failed: remount failed"), F("Retry with another card. If repeated, format on PC as FAT32 then retry."), false, false, true);
+  SdFailureStage remountStage = SdFailureStage::kInitBusFailure;
+  bool remountCapacityKnown = false;
+  uint32_t remountHz = kSdSpiHz;
+  String remountDetail;
+  if (!mountSdWithRetries(true, remountDetail, remountStage, remountCapacityKnown, remountHz)) {
+    setSdStatus(remountStage, false, remountDetail);
+    setSdFormatStatus(F("failed"), String(F("SD format failed: remount failed: ")) + remountDetail,
+                      F("Retry with another card. If repeated, format on PC as FAT32 then retry."), false, false, true);
     return false;
   }
+  (void)remountCapacityKnown;
+  (void)remountHz;
 
-  String remountDetail;
   if (!ensureSdMountedAndUsable(remountDetail)) {
     setSdStatus(SdFailureStage::kMountFsFailure, false, remountDetail);
     setSdFormatStatus(F("failed"), String(F("SD format failed after remount: ")) + remountDetail, F("Try a different SD card and verify wiring/power stability."), false, false, true);
@@ -1053,7 +1104,6 @@ void configureRoutes() {
 
 bool mountSd() {
   setSdStatus(SdFailureStage::kInitBusFailure, false, F("not initialized"));
-  SPI.begin(kSdSckPin, kSdMisoPin, kSdMosiPin, kSdCsPin);
   String detail;
   SdFailureStage stage = SdFailureStage::kInitBusFailure;
   bool capacityKnown = false;
