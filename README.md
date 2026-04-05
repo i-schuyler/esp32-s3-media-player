@@ -2,6 +2,7 @@
 
 ESP32-S3 Media Server is firmware for `esp32-s3-devkitc-1-n32r16v` that:
 - starts a local Wi-Fi AP and serves a browser UI,
+- shows the running firmware version on the main and OTA UI pages,
 - mounts and browses microSD media files,
 - supports upload/download + HTTP Range streaming for mobile players (VLC),
 - provides a web OTA firmware update flow with progress/status reporting.

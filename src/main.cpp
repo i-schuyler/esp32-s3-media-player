@@ -8,6 +8,8 @@
 #include <esp_ota_ops.h>
 #include <cstring>
 
+#include "firmware_version.h"
+
 namespace {
 WebServer server(80);
 
@@ -304,6 +306,9 @@ void handleRoot() {
   body += F("<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>");
   body += F("<title>ESP32-S3 Media Server</title></head><body>");
   body += F("<h1>ESP32-S3 Media Server</h1>");
+  body += F("<p>Firmware version: ");
+  body += firmware::kFirmwareVersion;
+  body += F("</p>");
   body += F("<p><a href='/files'>Open file browser</a></p>");
   body += F("<p><a href='/sd-diagnostics'>SD diagnostics</a></p>");
   body += F("<p><a href='/ota'>Firmware update (OTA)</a></p>");
@@ -606,6 +611,9 @@ void handleOtaPage() {
   body += F("<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>");
   body += F("<title>OTA Update</title></head><body>");
   body += F("<h1>OTA Firmware Update</h1>");
+  body += F("<p>Current firmware version: ");
+  body += firmware::kFirmwareVersion;
+  body += F("</p>");
   body += F("<p>Upload a valid firmware.bin built for this board.</p>");
   body += F("<form id='otaForm' method='POST' action='/ota' enctype='multipart/form-data'>");
   body += F("<input id='fw' type='file' name='firmware' accept='.bin,application/octet-stream' required/>");
