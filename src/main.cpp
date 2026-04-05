@@ -6,6 +6,7 @@
 #include <WiFi.h>
 #include <esp_err.h>
 #include <esp_ota_ops.h>
+#include <cstdarg>
 #include <cstring>
 
 #include "firmware_version.h"
@@ -26,6 +27,8 @@ constexpr const char* kSdFormatConfirmToken = "FORMAT";
 constexpr const char* kDefaultApPassword = "12345678";
 constexpr const char* kExpectedBoardTarget = "esp32-s3-devkitc-1-n32r16v";
 constexpr size_t kChunkSize = 2048;
+constexpr size_t kDebugLogCapacity = 120;
+constexpr size_t kDebugLogLineMaxLen = 220;
 constexpr uint8_t kEspImageMagicByte = 0xE9;
 constexpr int32_t kOtaErrorSizeMismatch = 255;
 constexpr int32_t kOtaErrorBadMagic = 254;
@@ -84,6 +87,9 @@ struct SdFormatStatus {
 };
 
 SdFormatStatus gSdFormatStatus;
+String gDebugLog[kDebugLogCapacity];
+size_t gDebugLogNext = 0;
+size_t gDebugLogCount = 0;
 
 String htmlEscape(const String& in) {
   String out;
@@ -111,6 +117,61 @@ String jsonEscape(const String& in) {
     else out += c;
   }
   return out;
+}
+
+String sanitizeDebugLogLine(const String& in) {
+  String out;
+  out.reserve(in.length());
+  for (size_t i = 0; i < in.length(); ++i) {
+    const char c = in.charAt(i);
+    if (c == '\n' || c == '\r') continue;
+    if (static_cast<unsigned char>(c) < 32 && c != '\t') continue;
+    out += c;
+  }
+  if (out.length() > kDebugLogLineMaxLen) {
+    out = out.substring(0, kDebugLogLineMaxLen);
+    out += F("...");
+  }
+  return out;
+}
+
+void appendDebugLogLine(const String& line) {
+  gDebugLog[gDebugLogNext] = sanitizeDebugLogLine(line);
+  gDebugLogNext = (gDebugLogNext + 1) % kDebugLogCapacity;
+  if (gDebugLogCount < kDebugLogCapacity) ++gDebugLogCount;
+}
+
+void serialAndDebugLog(const String& line) {
+  Serial.println(line);
+  appendDebugLogLine(line);
+}
+
+void serialAndDebugLogf(const char* fmt, ...) {
+  char buffer[256];
+  va_list args;
+  va_start(args, fmt);
+  vsnprintf(buffer, sizeof(buffer), fmt, args);
+  va_end(args);
+  Serial.println(buffer);
+  appendDebugLogLine(String(buffer));
+}
+
+String debugLogJson() {
+  String json = "{";
+  json += "\"capacity\":";
+  json += String(static_cast<unsigned long>(kDebugLogCapacity));
+  json += ",\"count\":";
+  json += String(static_cast<unsigned long>(gDebugLogCount));
+  json += ",\"lines\":[";
+  for (size_t i = 0; i < gDebugLogCount; ++i) {
+    if (i > 0) json += ",";
+    size_t idx = (gDebugLogNext + kDebugLogCapacity - gDebugLogCount + i) % kDebugLogCapacity;
+    json += "\"";
+    json += jsonEscape(gDebugLog[idx]);
+    json += "\"";
+  }
+  json += "]}";
+  return json;
 }
 
 String otaBuildEnvName() {
@@ -428,6 +489,7 @@ void handleRoot() {
   body += firmware::kFirmwareVersion;
   body += F("</p>");
   body += F("<p><a href='/files'>Open file browser</a></p>");
+  body += F("<p><a href='/debug-log'>Debug log (OTA/SD)</a></p>");
   body += F("<p><a href='/sd-diagnostics'>SD diagnostics</a></p>");
   body += F("<p><a href='/ota'>Firmware update (OTA)</a></p>");
   body += F("</body></html>");
@@ -472,6 +534,7 @@ void handleFilesPage() {
   body += F("<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>");
   body += F("<title>ESP32 Files</title></head><body><h1>SD Browser</h1>");
   body += F("<p><a href='/sd-diagnostics'>Open SD diagnostics</a></p>");
+  body += F("<p><a href='/debug-log'>Open rolling debug log</a></p>");
   body += F("<p><a href='/ota'>Open OTA firmware updater</a></p>");
   body += F("<form method='POST' action='/upload' enctype='multipart/form-data'>");
   body += F("<input type='file' name='file'/>");
@@ -529,9 +592,31 @@ void handleSdDiagnosticsPage() {
     body += htmlEscape(gSdStatus.detail);
     body += F("</p>");
   }
+  body += F("<p><a href='/debug-log'>Open rolling OTA/SD debug log</a></p>");
   body += F("<p>Serial logs remain available for deeper debugging.</p>");
   body += F("<p><a href='/api/sd/status'>View raw JSON status</a></p>");
   body += F("<p><a href='/files'>Back to file browser</a></p></body></html>");
+  server.send(200, F("text/html"), body);
+}
+
+void handleDebugLogApi() {
+  server.send(200, F("application/json"), debugLogJson());
+}
+
+void handleDebugLogPage() {
+  String body;
+  body.reserve(2600);
+  body += F("<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>");
+  body += F("<title>Debug log</title></head><body><h1>Rolling debug log</h1>");
+  body += F("<p>In-memory bounded OTA/SD troubleshooting log (clears on reboot; rolls when full).</p>");
+  body += F("<p><a href='/api/debug-log'>View raw JSON log</a></p>");
+  body += F("<pre id='log' style='white-space:pre-wrap;background:#111;color:#0f0;padding:12px;border-radius:8px;min-height:240px;'></pre>");
+  body += F("<p><a href='/'>Home</a> | <a href='/files'>Files</a> | <a href='/ota'>OTA</a> | <a href='/sd-diagnostics'>SD diagnostics</a></p>");
+  body += F("<script>");
+  body += F("const logEl=document.getElementById('log');");
+  body += F("function render(j){const lines=Array.isArray(j.lines)?j.lines:[];logEl.textContent=lines.join('\\n')||'(no entries yet)';}");
+  body += F("function load(){fetch('/api/debug-log',{cache:'no-store'}).then(r=>r.json()).then(render).catch(()=>{});}load();setInterval(load,1000);");
+  body += F("</script></body></html>");
   server.send(200, F("text/html"), body);
 }
 
@@ -746,6 +831,7 @@ void handleOtaPage() {
   body += F("<p id='status'>Status: waiting for upload</p>");
   body += F("<p id='diag'>Diag: env=unknown, running=unknown, target=unknown, error=none(0)</p>");
   body += F("<p id='guidance'>Next step: choose a valid firmware.bin for esp32-s3-devkitc-1-n32r16v.</p>");
+  body += F("<p><a href='/debug-log'>Open rolling OTA/SD debug log</a></p>");
   body += F("<p><a href='/'>Back</a></p>");
   body += F("<script>");
   body += F("const f=document.getElementById('otaForm');const p=document.getElementById('uploadProgress');const st=document.getElementById('stage');const s=document.getElementById('status');const g=document.getElementById('guidance');const d=document.getElementById('diag');");
@@ -899,7 +985,7 @@ void handleOtaChunk() {
           otaErrorNameForEspErr(ESP_ERR_NOT_FOUND),
           F("OTA blocked before upload: no OTA target partition available"),
           otaGuidanceForEspErr(ESP_ERR_NOT_FOUND));
-      Serial.println(F("OTA: PRECHECK FAILED (NO TARGET PARTITION)"));
+      serialAndDebugLog(F("OTA: PRECHECK FAILED (NO TARGET PARTITION)"));
       return;
     }
 
@@ -915,7 +1001,7 @@ void handleOtaChunk() {
           otaErrorNameForEspErr(ESP_ERR_INVALID_SIZE),
           msg,
           otaGuidanceForEspErr(ESP_ERR_INVALID_SIZE));
-      Serial.println(F("OTA: PRECHECK FAILED (SIZE > TARGET)"));
+      serialAndDebugLog(F("OTA: PRECHECK FAILED (SIZE > TARGET)"));
       return;
     }
 
@@ -929,8 +1015,8 @@ void handleOtaChunk() {
           String(F("OTA failed: unable to start update: ")) + otaErrorNameForEspErr(beginErr),
           String(F("Confirm firmware target ")) + kExpectedBoardTarget +
               F(" and retry. If this repeats, verify release build parity and partition diagnostics on this page."));
-      Serial.println(F("OTA: BEGIN FAILED"));
-      Serial.printf("OTA: ERROR CODE=%ld\n", static_cast<long>(beginErr));
+      serialAndDebugLog(F("OTA: BEGIN FAILED"));
+      serialAndDebugLogf("OTA: ERROR CODE=%ld", static_cast<long>(beginErr));
       return;
     }
 
@@ -950,7 +1036,7 @@ void handleOtaChunk() {
             F("invalid_image_header"),
             F("OTA blocked before validation/apply: invalid ESP image header"),
             F("Selected file is not a valid ESP32 app image. Use firmware.bin built for esp32-s3-devkitc-1-n32r16v."));
-        Serial.println(F("OTA: PRECHECK FAILED (MAGIC BYTE)"));
+        serialAndDebugLog(F("OTA: PRECHECK FAILED (MAGIC BYTE)"));
         return;
       }
     }
@@ -965,8 +1051,8 @@ void handleOtaChunk() {
           otaErrorNameForEspErr(writeErr),
           String(F("OTA failed: write error: ")) + otaErrorNameForEspErr(writeErr),
           F("Reboot and retry. If repeated, reflash over USB and verify firmware.bin target."));
-      Serial.println(F("OTA: WRITE FAILED"));
-      Serial.printf("OTA: ERROR CODE=%ld\n", static_cast<long>(writeErr));
+      serialAndDebugLog(F("OTA: WRITE FAILED"));
+      serialAndDebugLogf("OTA: ERROR CODE=%ld", static_cast<long>(writeErr));
       return;
     }
 
@@ -996,13 +1082,14 @@ void handleOtaChunk() {
           F("size_mismatch"),
           F("OTA failed: upload size mismatch before validation/apply"),
           F("Retry OTA on a stable connection. Keep this page open until the final status appears."));
-      Serial.println(F("OTA: SIZE MISMATCH"));
+      serialAndDebugLog(F("OTA: SIZE MISMATCH"));
       return;
     }
 
     gOtaStatus.stage = F("validate_apply");
     gOtaStatus.message = F("upload complete, validating and applying firmware");
     gOtaStatus.guidance = F("Wait for final OTA result.");
+    serialAndDebugLog(F("OTA: VALIDATE/APPLY START"));
 
     const esp_err_t endErr = esp_ota_end(gOtaSession.handle);
     if (endErr != ESP_OK) {
@@ -1013,8 +1100,8 @@ void handleOtaChunk() {
           otaErrorNameForEspErr(endErr),
           String(F("OTA failed during validation/apply: ")) + otaErrorNameForEspErr(endErr),
           otaGuidanceForEspErr(endErr));
-      Serial.println(F("OTA: END FAILED"));
-      Serial.printf("OTA: ERROR CODE=%ld\n", static_cast<long>(endErr));
+      serialAndDebugLog(F("OTA: END FAILED"));
+      serialAndDebugLogf("OTA: ERROR CODE=%ld", static_cast<long>(endErr));
       return;
     }
 
@@ -1031,7 +1118,7 @@ void handleOtaChunk() {
       gOtaStatus.guidance = F("Wait for reboot, reconnect to ESP32-MEDIA AP, then verify app version.");
       gOtaRestartPending = true;
       gOtaRestartAtMs = millis() + 1500;
-      Serial.println(F("OTA: SUCCESS"));
+      serialAndDebugLog(F("OTA: SUCCESS"));
     } else {
       setOtaFailure(
           F("failed"),
@@ -1039,8 +1126,8 @@ void handleOtaChunk() {
           otaErrorNameForEspErr(bootErr),
           String(F("OTA failed during validation/apply: ")) + otaErrorNameForEspErr(bootErr),
           otaGuidanceForEspErr(bootErr));
-      Serial.println(F("OTA: ACTIVATE FAILED"));
-      Serial.printf("OTA: ERROR CODE=%ld\n", static_cast<long>(bootErr));
+      serialAndDebugLog(F("OTA: ACTIVATE FAILED"));
+      serialAndDebugLogf("OTA: ERROR CODE=%ld", static_cast<long>(bootErr));
     }
   } else if (upload.status == UPLOAD_FILE_ABORTED) {
     if (gOtaSession.active) {
@@ -1053,7 +1140,7 @@ void handleOtaChunk() {
         F("aborted"),
         F("OTA failed: upload interrupted or aborted"),
         F("Keep device powered, reconnect, and retry OTA with a stable network."));
-    Serial.println(F("OTA: ABORTED"));
+    serialAndDebugLog(F("OTA: ABORTED"));
   }
 }
 
@@ -1093,6 +1180,8 @@ void configureRoutes() {
   server.on("/api/sd/format/status", HTTP_GET, handleSdFormatStatusApi);
   server.on("/api/sd/format", HTTP_POST, handleSdFormatPost);
   server.on("/api/ota/status", HTTP_GET, handleOtaStatusApi);
+  server.on("/api/debug-log", HTTP_GET, handleDebugLogApi);
+  server.on("/debug-log", HTTP_GET, handleDebugLogPage);
   server.on("/sd-diagnostics", HTTP_GET, handleSdDiagnosticsPage);
   server.on("/download", HTTP_GET, handleDownload);
   server.on("/stream", HTTP_GET, handleStream);
@@ -1110,22 +1199,22 @@ bool mountSd() {
   uint32_t usedHz = kSdSpiHz;
   if (!mountSdWithRetries(false, detail, stage, capacityKnown, usedHz)) {
     setSdStatus(stage, false, detail);
-    Serial.println(F("SD: MOUNT FAILED"));
-    Serial.printf("SD: DIAG STAGE=%s\n", sdStageCode(gSdStatus.stage).c_str());
-    Serial.printf("SD: DETAIL=%s\n", detail.c_str());
+    serialAndDebugLog(F("SD: MOUNT FAILED"));
+    serialAndDebugLogf("SD: DIAG STAGE=%s", sdStageCode(gSdStatus.stage).c_str());
+    serialAndDebugLogf("SD: DETAIL=%s", detail.c_str());
     return false;
   }
 
-  Serial.println(F("SD: MOUNTED"));
+  serialAndDebugLog(F("SD: MOUNTED"));
   if (!capacityKnown) {
-    Serial.println(F("SD: CAPACITY UNKNOWN (continuing because root access works)"));
+    serialAndDebugLog(F("SD: CAPACITY UNKNOWN (continuing because root access works)"));
     setSdStatus(SdFailureStage::kOk, true, detail);
   } else {
     setSdStatus(SdFailureStage::kOk, true, detail);
   }
-  Serial.printf("SD: SPI %s\n", sdSpiSpeedLabel(usedHz).c_str());
-  Serial.println(F("SD: READ OK"));
-  Serial.println(F("SD: LIST OK"));
+  serialAndDebugLogf("SD: SPI %s", sdSpiSpeedLabel(usedHz).c_str());
+  serialAndDebugLog(F("SD: READ OK"));
+  serialAndDebugLog(F("SD: LIST OK"));
   return true;
 }
 
@@ -1144,19 +1233,19 @@ void startApAndServer() {
 void setup() {
   Serial.begin(115200);
   delay(200);
-  Serial.println(F("BOOT: OK"));
+  serialAndDebugLog(F("BOOT: OK"));
   refreshOtaDiagnostics();
-  Serial.printf("OTA: BUILD ENV=%s BOARD=%s\n", gOtaStatus.buildEnv.c_str(), kExpectedBoardTarget);
-  Serial.printf("OTA: RUNNING PARTITION=%s\n", gOtaStatus.runningPartition.c_str());
-  Serial.printf("OTA: TARGET PARTITION=%s\n", gOtaStatus.targetPartition.c_str());
+  serialAndDebugLogf("OTA: BUILD ENV=%s BOARD=%s", gOtaStatus.buildEnv.c_str(), kExpectedBoardTarget);
+  serialAndDebugLogf("OTA: RUNNING PARTITION=%s", gOtaStatus.runningPartition.c_str());
+  serialAndDebugLogf("OTA: TARGET PARTITION=%s", gOtaStatus.targetPartition.c_str());
 
   if (mountSd()) {
     // Boot smoke regex expects RTC line; we only emit a placeholder in v0.1 firmware.
-    Serial.println(F("RTC: READ OK"));
+    serialAndDebugLog(F("RTC: READ OK"));
   }
 
   startApAndServer();
-  Serial.println(F("ESP32-MEDIA: READY"));
+  serialAndDebugLog(F("ESP32-MEDIA: READY"));
 }
 
 void loop() {
