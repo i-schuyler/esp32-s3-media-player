@@ -7,6 +7,7 @@ A PR may be auto-merged only when ALL are true:
 - PR body includes `NEEDS_HIL: no` (until HIL runner exists).
 - PR scope matches a linked issue (Issue URL present).
 - No forbidden paths touched (see `.github/workflows/ci.yml`).
+- For OTA-sensitive changes, OTA smoke retest is completed per `docs/SMOKE_TEST_SPEC.md` before merge.
 
 Anything else must be labeled `needs-human`.
 
@@ -21,6 +22,14 @@ Automation MUST stop and ask for human input when:
 - breaking=yes
 - unknown hardware assumptions
 - flaky CI or non-deterministic test failures
+
+## OTA retest triggers (pre-merge)
+Run OTA smoke (manual) before merge when a PR changes any of:
+- OTA upload/apply/reboot code path or OTA status/diagnostics behavior.
+- Build/release workflow logic that produces firmware artifacts.
+- Partition tables or OTA partition selection/layout behavior.
+- Build config affecting binary compatibility or boot/apply behavior (board/env/framework/flash size/flash mode/memory/PSRAM).
+- Firmware version embedding/stamping or release artifact/version metadata handling.
 
 ## Release hygiene (required after merge)
 - Every merged PR must update `CHANGELOG.md` (prepend order; newest entry first).
