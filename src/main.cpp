@@ -13,6 +13,7 @@
 
 namespace {
 WebServer server(80);
+SPIClass gSdSpi(FSPI);
 
 constexpr uint8_t kSdCsPin = 13;
 constexpr uint8_t kSdSckPin = 12;
@@ -467,7 +468,7 @@ void resetSdInitTrace(bool allowFormat) {
   gSdAttemptedSpeeds = "";
   gSdInitTrace = "";
   appendSdInitTraceLine(String(F("start allow_format=")) + (allowFormat ? F("true") : F("false")));
-  appendSdInitTraceLine(F("flow preclock_cmd0_then_sd_begin"));
+  appendSdInitTraceLine(F("flow sd_begin_then_cmd0_diag_on_failure"));
   appendSdInitTraceLine(String(F("pin_map ")) + gSdPinMap);
 }
 
@@ -498,35 +499,35 @@ void appendSdTraceToDebugLog() {
 SdCmd0Probe sdProbeCmd0(uint32_t hz) {
   SdCmd0Probe probe;
   probe.hz = hz;
-  SPI.beginTransaction(SPISettings(hz, MSBFIRST, SPI_MODE0));
+  gSdSpi.beginTransaction(SPISettings(hz, MSBFIRST, SPI_MODE0));
   digitalWrite(kSdCsPin, HIGH);
   probe.csIdleHigh = (digitalRead(kSdCsPin) == HIGH);
   for (uint8_t i = 0; i < kSdInitClockBytes; ++i) {
-    SPI.transfer(0xFF);
+    gSdSpi.transfer(0xFF);
   }
   probe.dummyClocksIssued = true;
 
   digitalWrite(kSdCsPin, LOW);
   probe.csAssertedLow = (digitalRead(kSdCsPin) == LOW);
-  SPI.transfer(0xFF);
-  SPI.transfer(0x40);
-  SPI.transfer(0x00);
-  SPI.transfer(0x00);
-  SPI.transfer(0x00);
-  SPI.transfer(0x00);
-  SPI.transfer(0x95);
+  gSdSpi.transfer(0xFF);
+  gSdSpi.transfer(0x40);
+  gSdSpi.transfer(0x00);
+  gSdSpi.transfer(0x00);
+  gSdSpi.transfer(0x00);
+  gSdSpi.transfer(0x00);
+  gSdSpi.transfer(0x95);
 
   uint8_t r1 = 0xFF;
   for (uint8_t i = 0; i < kSdCmdResponsePolls; ++i) {
-    r1 = SPI.transfer(0xFF);
+    r1 = gSdSpi.transfer(0xFF);
     ++probe.polls;
     if ((r1 & 0x80) == 0) break;
   }
 
   digitalWrite(kSdCsPin, HIGH);
   probe.csReleasedHigh = (digitalRead(kSdCsPin) == HIGH);
-  SPI.transfer(0xFF);
-  SPI.endTransaction();
+  gSdSpi.transfer(0xFF);
+  gSdSpi.endTransaction();
   probe.r1 = r1;
   return probe;
 }
@@ -541,41 +542,40 @@ void primeSdSpiBus() {
   digitalWrite(kSdMosiPin, HIGH);
   delay(2);
 
-  SPI.begin(kSdSckPin, kSdMisoPin, kSdMosiPin, kSdCsPin);
+  gSdSpi.begin(kSdSckPin, kSdMisoPin, kSdMosiPin, kSdCsPin);
 }
 
 bool mountSdAttempt(uint32_t hz, bool allowFormat, uint8_t attemptNumber, String& detail, SdFailureStage& stage, bool& capacityKnown) {
   const String misoHint = sdMisoIdleHint();
-  const SdCmd0Probe cmd0Probe = sdProbeCmd0(kSdInitHz);
-  const bool cmd0IdleResponse = (cmd0Probe.r1 == 0x01);
-  const bool cmd0AnyResponse = (cmd0Probe.r1 != 0xFF) && ((cmd0Probe.r1 & 0x80) == 0);
   String prefix = String(F("attempt#")) + String(static_cast<unsigned long>(attemptNumber)) +
                   F(" speed=") + sdSpiSpeedLabel(hz) +
-                  F(" cmd0_hz=") + sdSpiSpeedLabel(cmd0Probe.hz) +
-                  F(" cmd0=") + sdCmd0OutcomeLabel(cmd0Probe) +
-                  F(" cmd0_r1=") + sdHexByte(cmd0Probe.r1) +
-                  F(" cmd0_polls=") + String(static_cast<unsigned long>(cmd0Probe.polls)) +
-                  F(" dummy_clocks=") + (cmd0Probe.dummyClocksIssued ? F("yes") : F("no")) +
-                  F(" cs_idle_high=") + (cmd0Probe.csIdleHigh ? F("yes") : F("no")) +
-                  F(" cs_assert_low=") + (cmd0Probe.csAssertedLow ? F("yes") : F("no")) +
-                  F(" cs_release_high=") + (cmd0Probe.csReleasedHigh ? F("yes") : F("no")) +
                   F(" ") + misoHint;
 
-  if (!SD.begin(kSdCsPin, SPI, hz, kSdMountPoint, 5, allowFormat)) {
+  if (!SD.begin(kSdCsPin, gSdSpi, hz, kSdMountPoint, 5, allowFormat)) {
+    const SdCmd0Probe cmd0Probe = sdProbeCmd0(hz);
+    const bool cmd0AnyResponse = (cmd0Probe.r1 != 0xFF) && ((cmd0Probe.r1 & 0x80) == 0);
+    const String cmd0Summary = String(F(" cmd0_hz=")) + sdSpiSpeedLabel(cmd0Probe.hz) +
+                               F(" cmd0=") + sdCmd0OutcomeLabel(cmd0Probe) +
+                               F(" cmd0_r1=") + sdHexByte(cmd0Probe.r1) +
+                               F(" cmd0_polls=") + String(static_cast<unsigned long>(cmd0Probe.polls)) +
+                               F(" dummy_clocks=") + (cmd0Probe.dummyClocksIssued ? F("yes") : F("no")) +
+                               F(" cs_idle_high=") + (cmd0Probe.csIdleHigh ? F("yes") : F("no")) +
+                               F(" cs_assert_low=") + (cmd0Probe.csAssertedLow ? F("yes") : F("no")) +
+                               F(" cs_release_high=") + (cmd0Probe.csReleasedHigh ? F("yes") : F("no"));
     const uint8_t cardType = SD.cardType();
     if (!cmd0AnyResponse) {
       stage = SdFailureStage::kCardCommFailure;
-      appendSdInitTraceLine(prefix + F(" stage=card_comm_failure sd_begin=failed cardType=") + sdCardTypeLabel(cardType));
+      appendSdInitTraceLine(prefix + cmd0Summary + F(" stage=card_comm_failure sd_begin=failed cardType=") + sdCardTypeLabel(cardType));
       detail = String(F("no card response (CMD0 timeout); SD.begin failed at ")) + sdSpiSpeedLabel(hz) +
                F(" (cmd0_r1=") + sdHexByte(cmd0Probe.r1) + F(", cardType=") + sdCardTypeLabel(cardType) + F(", ") + misoHint + F(")");
     } else if (cardType == CARD_NONE) {
       stage = SdFailureStage::kInitBusFailure;
-      appendSdInitTraceLine(prefix + F(" stage=init_bus_failure sd_begin=failed cardType=none"));
+      appendSdInitTraceLine(prefix + cmd0Summary + F(" stage=init_bus_failure sd_begin=failed cardType=none"));
       detail = String(F("card responded but init/select failed at ")) + sdSpiSpeedLabel(hz) +
                F(" (cmd0_r1=") + sdHexByte(cmd0Probe.r1) + F(", cardType=none, ") + misoHint + F(")");
     } else {
       stage = SdFailureStage::kMountFsFailure;
-      appendSdInitTraceLine(prefix + F(" stage=mount_fs_failure sd_begin=failed cardType=") + sdCardTypeLabel(cardType));
+      appendSdInitTraceLine(prefix + cmd0Summary + F(" stage=mount_fs_failure sd_begin=failed cardType=") + sdCardTypeLabel(cardType));
       detail = String(F("SD.begin failed after card init at ")) + sdSpiSpeedLabel(hz) +
                F(" after card response (cmd0_r1=") + sdHexByte(cmd0Probe.r1) + F(", cardType=") + sdCardTypeLabel(cardType) + F(", ") + misoHint + F(")");
     }
@@ -584,10 +584,21 @@ bool mountSdAttempt(uint32_t hz, bool allowFormat, uint8_t attemptNumber, String
 
   const uint8_t cardType = SD.cardType();
   if (cardType == CARD_NONE) {
+    const SdCmd0Probe cmd0Probe = sdProbeCmd0(hz);
+    const bool cmd0AnyResponse = (cmd0Probe.r1 != 0xFF) && ((cmd0Probe.r1 & 0x80) == 0);
     stage = cmd0AnyResponse ? SdFailureStage::kInitBusFailure : SdFailureStage::kCardCommFailure;
-    appendSdInitTraceLine(prefix + F(" stage=post_begin_card_none sd_begin=ok cardType=none"));
+    appendSdInitTraceLine(prefix +
+                          F(" cmd0_hz=") + sdSpiSpeedLabel(cmd0Probe.hz) +
+                          F(" cmd0=") + sdCmd0OutcomeLabel(cmd0Probe) +
+                          F(" cmd0_r1=") + sdHexByte(cmd0Probe.r1) +
+                          F(" cmd0_polls=") + String(static_cast<unsigned long>(cmd0Probe.polls)) +
+                          F(" dummy_clocks=") + (cmd0Probe.dummyClocksIssued ? F("yes") : F("no")) +
+                          F(" cs_idle_high=") + (cmd0Probe.csIdleHigh ? F("yes") : F("no")) +
+                          F(" cs_assert_low=") + (cmd0Probe.csAssertedLow ? F("yes") : F("no")) +
+                          F(" cs_release_high=") + (cmd0Probe.csReleasedHigh ? F("yes") : F("no")) +
+                          F(" stage=post_begin_card_none sd_begin=ok cardType=none"));
     detail = String(F("card not detected after begin at ")) + sdSpiSpeedLabel(hz) +
-             F(" (cmd0=") + (cmd0IdleResponse ? F("idle") : sdCmd0OutcomeLabel(cmd0Probe)) +
+             F(" (cmd0=") + sdCmd0OutcomeLabel(cmd0Probe) +
              F(", cmd0_r1=") + sdHexByte(cmd0Probe.r1) + F(", ") + misoHint + F(")");
     return false;
   }
@@ -626,7 +637,7 @@ bool mountSdWithRetries(bool allowFormat, String& detail, SdFailureStage& stage,
       ++attemptNumber;
       recordSdAttemptedSpeed(hz);
       SD.end();
-      SPI.end();
+      gSdSpi.end();
       primeSdSpiBus();
       if (mountSdAttempt(hz, allowFormat, attemptNumber, detail, stage, capacityKnown)) {
         usedHz = hz;
