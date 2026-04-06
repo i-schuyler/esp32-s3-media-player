@@ -12,6 +12,27 @@
 - PR: <url>
 - Issue: <url>
 
+## [v0.1.12] - 2026-04-06
+
+### Added
+
+* Issue #44 implementation plan mapping SD SPI-mode hardening scope to `ACCEPTANCE.md` and `docs/SMOKE_TEST_SPEC.md`.
+* Browser-visible SD init trace now includes raw CMD0 response detail (`R1` byte + poll count), explicit dummy-clock issuance, and CS transition-state diagnostics.
+
+### Changed
+
+* SD bring-up attempts now use one clearer authoritative pre-mount sequence per attempt: bus prime, SPI-mode preclock/CMD0 probe, then `SD.begin`.
+* Rolling debug log mirrors the deeper bounded SD trace so CMD0/CS failures are diagnosable from the browser.
+
+### Fixed
+
+* Reduced ambiguity in no-card-response triage by exposing raw CMD0/CS probe evidence without requiring USB serial.
+
+### Notes
+
+* PR:
+* Issue: https://github.com/i-schuyler/esp32-s3-media-player/issues/44
+
 ## [v0.1.11] - 2026-04-06
 
 ### Added
