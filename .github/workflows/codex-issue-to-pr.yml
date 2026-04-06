@@ -141,28 +141,67 @@ jobs:
               }
             }
 
-            const issueBranchPrefix = `heads/codex/issue-${issueNumber}`;
-            let matchingIssueRefs = [];
+            const escapedIssueNumber = String(issueNumber).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const issueBranchPatterns = [
+              new RegExp(`^codex/issue-${escapedIssueNumber}(?:$|[-/].+)`),
+              new RegExp(`^issue-${escapedIssueNumber}(?:$|[-/].+)`),
+            ];
+            const issueBranchRefPrefixes = [
+              `heads/codex/issue-${issueNumber}`,
+              `heads/issue-${issueNumber}`,
+            ];
 
-            try {
-              const refs = await github.rest.git.listMatchingRefs({
-                owner,
-                repo,
-                ref: issueBranchPrefix,
-              });
-              matchingIssueRefs = refs.data
-                .filter((refEntry) => refEntry.ref.startsWith('refs/heads/'))
-                .map((refEntry) => ({
-                  branch: refEntry.ref.replace('refs/heads/', ''),
-                  sha: refEntry.object.sha,
-                }));
-            } catch (error) {
-              if (error.status !== 404) {
-                throw error;
+            function isIssueBranchForNumber(branchName) {
+              return issueBranchPatterns.some((pattern) => pattern.test(branchName));
+            }
+
+            const matchingIssueRefMap = new Map();
+
+            for (const issueBranchPrefix of issueBranchRefPrefixes) {
+              try {
+                const refs = await github.rest.git.listMatchingRefs({
+                  owner,
+                  repo,
+                  ref: issueBranchPrefix,
+                });
+
+                for (const refEntry of refs.data) {
+                  if (!refEntry.ref.startsWith('refs/heads/')) continue;
+
+                  const branch = refEntry.ref.replace('refs/heads/', '');
+                  if (!isIssueBranchForNumber(branch)) continue;
+
+                  matchingIssueRefMap.set(branch, {
+                    branch,
+                    sha: refEntry.object.sha,
+                  });
+                }
+              } catch (error) {
+                if (error.status !== 404) {
+                  throw error;
+                }
+              }
+            }
+
+            const matchingIssueRefs = Array.from(matchingIssueRefMap.values());
+
+            async function getCommitUpdatedAt(sha) {
+              try {
+                const commitResponse = await github.rest.repos.getCommit({
+                  owner,
+                  repo,
+                  ref: sha,
+                });
+                return commitResponse.data.commit?.committer?.date || commitResponse.data.commit?.author?.date || null;
+              } catch (error) {
+                core.warning(`Unable to resolve commit timestamp for ${sha}: ${error.message || error}`);
+                return null;
               }
             }
 
             for (const refEntry of matchingIssueRefs) {
+              refEntry.updatedAt = await getCommitUpdatedAt(refEntry.sha);
+
               const prsForBranch = await github.rest.pulls.list({
                 owner,
                 repo,
@@ -187,15 +226,30 @@ jobs:
               }
             }
 
+            matchingIssueRefs.sort((a, b) => {
+              const aUpdatedAt = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
+              const bUpdatedAt = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
+              return bUpdatedAt - aUpdatedAt;
+            });
+
+            const likelyRecoveryBranch = matchingIssueRefs[0] || null;
+
             const branchSet = new Set(matchingIssueRefs.map((refEntry) => refEntry.branch));
             const linkedPrs = Array.from(discoveredPrs.values());
 
             if (!linkedPrs.length) {
               const branchLines = matchingIssueRefs.length
                 ? matchingIssueRefs
-                    .map((refEntry) => `- \`${refEntry.branch}\` @ \`${refEntry.sha}\``)
+                    .map((refEntry) => {
+                      const updatedAtNote = refEntry.updatedAt ? ` (updated ${refEntry.updatedAt})` : '';
+                      return `- \`${refEntry.branch}\` @ \`${refEntry.sha}\`${updatedAtNote}`;
+                    })
                     .join('\n')
                 : '- none found';
+
+              const likelyRecoveryLine = likelyRecoveryBranch
+                ? `Likely recovery branch: \`${likelyRecoveryBranch.branch}\` @ \`${likelyRecoveryBranch.sha}\``
+                : 'Likely recovery branch: none';
 
               const recoveryBody = [
                 `Codex workflow ran, but no PR was discoverable for issue #${issueNumber}.`,
@@ -204,6 +258,8 @@ jobs:
                 '',
                 'Detected issue branch tips:',
                 branchLines,
+                '',
+                likelyRecoveryLine,
                 '',
                 'Manual recovery:',
                 '1. If a branch exists above, open a PR from that branch into `main`.',
