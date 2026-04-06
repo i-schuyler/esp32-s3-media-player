@@ -12,6 +12,28 @@
 - PR: <url>
 - Issue: <url>
 
+## [v0.1.14] - 2026-04-06
+
+### Added
+
+* Issue #49 implementation plan mapping staged SD power-up timing + SPI host/mode + raw CMD0 diagnostics scope to `ACCEPTANCE.md` and `docs/SMOKE_TEST_SPEC.md`.
+* Browser-visible SD diagnostics now expose SPI host and SPI mode in use (`/api/sd/status` and `/sd-diagnostics`).
+
+### Changed
+
+* SD bring-up now performs a more conservative staged per-attempt power-up settle sequence before each `SD.begin` attempt (CS-high settle, extra dummy clocks, pre-init settle).
+* SD CMD0 diagnostics now include bounded raw first polling bytes to better distinguish timeout/noise vs real card response without excessive log noise.
+* Rolling debug log now explicitly includes SD SPI host/mode and the new staged power-up trace lines during mount attempts.
+
+### Fixed
+
+* Narrowed SD init ambiguity when CMD0 times out by surfacing additional raw bus-response detail and explicit host/mode context without requiring USB serial.
+
+### Notes
+
+* PR:
+* Issue: https://github.com/i-schuyler/esp32-s3-media-player/issues/49
+
 ## [v0.1.13] - 2026-04-06
 
 ### Added
