@@ -21,6 +21,7 @@ constexpr uint8_t kSdMosiPin = 10;
 constexpr uint32_t kSdSpiHz = 4000000;
 constexpr uint32_t kSdInitHz = 400000;
 constexpr uint8_t kSdInitClockBytes = 10;
+constexpr uint8_t kSdAttemptsPerSpeed = 2;
 constexpr uint32_t kSdSpiRetryHz[] = {kSdInitHz, 1000000, 2000000, kSdSpiHz};
 constexpr const char* kSdMountPoint = "/sd";
 constexpr const char* kSdFormatConfirmToken = "FORMAT";
@@ -400,6 +401,34 @@ String sdMisoIdleHint() {
   return digitalRead(kSdMisoPin) == LOW ? F("miso_idle=low") : F("miso_idle=high");
 }
 
+bool sdCardRespondsToCmd0() {
+  SPI.beginTransaction(SPISettings(kSdInitHz, MSBFIRST, SPI_MODE0));
+  digitalWrite(kSdCsPin, HIGH);
+  for (uint8_t i = 0; i < kSdInitClockBytes; ++i) {
+    SPI.transfer(0xFF);
+  }
+
+  digitalWrite(kSdCsPin, LOW);
+  SPI.transfer(0xFF);
+  SPI.transfer(0x40);
+  SPI.transfer(0x00);
+  SPI.transfer(0x00);
+  SPI.transfer(0x00);
+  SPI.transfer(0x00);
+  SPI.transfer(0x95);
+
+  uint8_t r1 = 0xFF;
+  for (uint8_t i = 0; i < 10; ++i) {
+    r1 = SPI.transfer(0xFF);
+    if ((r1 & 0x80) == 0) break;
+  }
+
+  digitalWrite(kSdCsPin, HIGH);
+  SPI.transfer(0xFF);
+  SPI.endTransaction();
+  return r1 == 0x01;
+}
+
 void primeSdSpiBus() {
   pinMode(kSdCsPin, OUTPUT);
   pinMode(kSdSckPin, OUTPUT);
@@ -420,14 +449,21 @@ void primeSdSpiBus() {
 
 bool mountSdAttempt(uint32_t hz, bool allowFormat, String& detail, SdFailureStage& stage, bool& capacityKnown) {
   const String misoHint = sdMisoIdleHint();
+  const bool cmd0Response = sdCardRespondsToCmd0();
+
   if (!SD.begin(kSdCsPin, SPI, hz, kSdMountPoint, 5, allowFormat)) {
     const uint8_t cardType = SD.cardType();
-    if (cardType == CARD_NONE) {
+    if (!cmd0Response) {
       stage = SdFailureStage::kCardCommFailure;
-      detail = String(F("card not detected: SD.begin failed at ")) + sdSpiSpeedLabel(hz) + F(" (cardType=none, ") + misoHint + F(")");
-    } else {
+      detail = String(F("no card response (CMD0 timeout); SD.begin failed at ")) + sdSpiSpeedLabel(hz) +
+               F(" (cardType=") + sdCardTypeLabel(cardType) + F(", ") + misoHint + F(")");
+    } else if (cardType == CARD_NONE) {
       stage = SdFailureStage::kInitBusFailure;
-      detail = String(F("SD.begin failed at ")) + sdSpiSpeedLabel(hz) +
+      detail = String(F("card responded but init/select failed at ")) + sdSpiSpeedLabel(hz) +
+               F(" (cardType=none, ") + misoHint + F(")");
+    } else {
+      stage = SdFailureStage::kMountFsFailure;
+      detail = String(F("SD.begin failed after card init at ")) + sdSpiSpeedLabel(hz) +
                F(" after card response (cardType=") + sdCardTypeLabel(cardType) + F(", ") + misoHint + F(")");
     }
     return false;
@@ -435,8 +471,9 @@ bool mountSdAttempt(uint32_t hz, bool allowFormat, String& detail, SdFailureStag
 
   const uint8_t cardType = SD.cardType();
   if (cardType == CARD_NONE) {
-    stage = SdFailureStage::kCardCommFailure;
-    detail = String(F("card not detected after begin at ")) + sdSpiSpeedLabel(hz) + F(" (") + misoHint + F(")");
+    stage = cmd0Response ? SdFailureStage::kInitBusFailure : SdFailureStage::kCardCommFailure;
+    detail = String(F("card not detected after begin at ")) + sdSpiSpeedLabel(hz) +
+             F(" (cmd0=") + (cmd0Response ? F("ok") : F("timeout")) + F(", ") + misoHint + F(")");
     return false;
   }
 
@@ -465,12 +502,15 @@ bool mountSdWithRetries(bool allowFormat, String& detail, SdFailureStage& stage,
   usedHz = kSdSpiHz;
 
   for (const uint32_t hz : kSdSpiRetryHz) {
-    SD.end();
-    SPI.end();
-    primeSdSpiBus();
-    if (mountSdAttempt(hz, allowFormat, detail, stage, capacityKnown)) {
-      usedHz = hz;
-      return true;
+    for (uint8_t attempt = 0; attempt < kSdAttemptsPerSpeed; ++attempt) {
+      SD.end();
+      SPI.end();
+      primeSdSpiBus();
+      if (mountSdAttempt(hz, allowFormat, detail, stage, capacityKnown)) {
+        usedHz = hz;
+        return true;
+      }
+      delay(12);
     }
   }
   return false;
