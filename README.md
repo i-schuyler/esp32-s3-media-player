@@ -42,7 +42,7 @@ pio device monitor -b 115200
 ## OTA Web Update
 - Open `http://192.168.4.1/ota`.
 - Upload a board-matching `firmware.bin`.
-- The page reports upload progress and OTA status.
+- The page reports upload progress, OTA status, and a build/config diagnostics block (env, board, flash/PSRAM mode, partition layout, running/target partition).
 - On success, the device reports completion and reboots.
 - On interruption/error, OTA failure is reported and normal app flow continues.
 

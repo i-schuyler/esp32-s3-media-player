@@ -32,6 +32,7 @@ constexpr size_t kDebugLogLineMaxLen = 220;
 constexpr uint8_t kEspImageMagicByte = 0xE9;
 constexpr int32_t kOtaErrorSizeMismatch = 255;
 constexpr int32_t kOtaErrorBadMagic = 254;
+constexpr int32_t kOtaErrorFlashModeMismatch = 253;
 
 struct OtaStatus {
   bool inProgress = false;
@@ -47,11 +48,23 @@ struct OtaStatus {
   String runningPartition = F("unknown");
   String targetPartition = F("unknown");
   String buildEnv = F("unknown");
+  String buildBoard = F("unknown");
+  String buildFlashMode = F("unknown");
+  String buildPsramMode = F("unknown");
+  String buildMemoryType = F("unknown");
+  String buildPartitions = F("unknown");
+  String partitionLayout = F("unknown");
+  String runningImageFlashMode = F("unknown");
+  String uploadImageFlashMode = F("unknown");
 };
 
 struct OtaSession {
   bool active = false;
   bool headerChecked = false;
+  bool runningImageFlashModeKnown = false;
+  uint8_t runningImageFlashMode = 0;
+  uint8_t headerBytes[3] = {0, 0, 0};
+  size_t headerByteCount = 0;
   esp_ota_handle_t handle = 0;
   const esp_partition_t* target = nullptr;
 };
@@ -182,6 +195,82 @@ String otaBuildEnvName() {
 #endif
 }
 
+String otaBuildBoardName() {
+#ifdef FW_BUILD_BOARD
+  return String(FW_BUILD_BOARD);
+#else
+  return String(kExpectedBoardTarget);
+#endif
+}
+
+String otaBuildFlashModeName() {
+#ifdef FW_FLASH_MODE
+  return String(FW_FLASH_MODE);
+#else
+  return F("unknown");
+#endif
+}
+
+String otaBuildPsramModeName() {
+#ifdef FW_PSRAM_MODE
+  return String(FW_PSRAM_MODE);
+#else
+  return F("unknown");
+#endif
+}
+
+String otaBuildMemoryTypeName() {
+#ifdef FW_MEMORY_TYPE
+  return String(FW_MEMORY_TYPE);
+#else
+  return F("unknown");
+#endif
+}
+
+String otaBuildPartitionsName() {
+#ifdef FW_PARTITIONS_CSV
+  return String(FW_PARTITIONS_CSV);
+#else
+  return F("unknown");
+#endif
+}
+
+String otaPartitionSummary(const esp_partition_t* partition);
+
+String otaImageFlashModeName(uint8_t flashMode) {
+  switch (flashMode) {
+    case 0:
+      return F("qio");
+    case 1:
+      return F("qout");
+    case 2:
+      return F("dio");
+    case 3:
+      return F("dout");
+    default: {
+      String value = F("0x");
+      value += String(static_cast<unsigned long>(flashMode), HEX);
+      value.toUpperCase();
+      return value;
+    }
+  }
+}
+
+String otaPartitionLayoutSummary() {
+  const esp_partition_t* factory = esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, "factory");
+  const esp_partition_t* app0 = esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_0, "app0");
+  const esp_partition_t* app1 = esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_1, "app1");
+  String summary = F("csv=");
+  summary += otaBuildPartitionsName();
+  summary += F("; factory=");
+  summary += otaPartitionSummary(factory);
+  summary += F("; app0=");
+  summary += otaPartitionSummary(app0);
+  summary += F("; app1=");
+  summary += otaPartitionSummary(app1);
+  return summary;
+}
+
 String otaPartitionSummary(const esp_partition_t* partition) {
   if (partition == nullptr) return F("none");
   String summary = (partition->label && partition->label[0]) ? String(partition->label) : String(F("unnamed"));
@@ -194,6 +283,12 @@ String otaPartitionSummary(const esp_partition_t* partition) {
 
 void refreshOtaDiagnostics() {
   gOtaStatus.buildEnv = otaBuildEnvName();
+  gOtaStatus.buildBoard = otaBuildBoardName();
+  gOtaStatus.buildFlashMode = otaBuildFlashModeName();
+  gOtaStatus.buildPsramMode = otaBuildPsramModeName();
+  gOtaStatus.buildMemoryType = otaBuildMemoryTypeName();
+  gOtaStatus.buildPartitions = otaBuildPartitionsName();
+  gOtaStatus.partitionLayout = otaPartitionLayoutSummary();
   const esp_partition_t* running = esp_ota_get_running_partition();
   const esp_partition_t* target = esp_ota_get_next_update_partition(nullptr);
   gOtaStatus.runningPartition = otaPartitionSummary(running);
@@ -257,6 +352,12 @@ void setOtaFailure(const String& stage, int32_t errorCode, const String& errorNa
 void resetOtaSession() {
   gOtaSession.active = false;
   gOtaSession.headerChecked = false;
+  gOtaSession.runningImageFlashModeKnown = false;
+  gOtaSession.runningImageFlashMode = 0;
+  gOtaSession.headerBytes[0] = 0;
+  gOtaSession.headerBytes[1] = 0;
+  gOtaSession.headerBytes[2] = 0;
+  gOtaSession.headerByteCount = 0;
   gOtaSession.handle = 0;
   gOtaSession.target = nullptr;
 }
@@ -783,10 +884,26 @@ void handleOtaStatusApi() {
   json += jsonEscape(gOtaStatus.guidance);
   json += "\",\"build_env\":\"";
   json += jsonEscape(gOtaStatus.buildEnv);
+  json += "\",\"build_board\":\"";
+  json += jsonEscape(gOtaStatus.buildBoard);
+  json += "\",\"build_flash_mode\":\"";
+  json += jsonEscape(gOtaStatus.buildFlashMode);
+  json += "\",\"build_psram_mode\":\"";
+  json += jsonEscape(gOtaStatus.buildPsramMode);
+  json += "\",\"build_memory_type\":\"";
+  json += jsonEscape(gOtaStatus.buildMemoryType);
+  json += "\",\"build_partitions\":\"";
+  json += jsonEscape(gOtaStatus.buildPartitions);
+  json += "\",\"partition_layout\":\"";
+  json += jsonEscape(gOtaStatus.partitionLayout);
   json += "\",\"running_partition\":\"";
   json += jsonEscape(gOtaStatus.runningPartition);
   json += "\",\"target_partition\":\"";
   json += jsonEscape(gOtaStatus.targetPartition);
+  json += "\",\"running_image_flash_mode\":\"";
+  json += jsonEscape(gOtaStatus.runningImageFlashMode);
+  json += "\",\"upload_image_flash_mode\":\"";
+  json += jsonEscape(gOtaStatus.uploadImageFlashMode);
   json += "\"}";
   server.send(200, F("application/json"), json);
 }
@@ -830,12 +947,14 @@ void handleOtaPage() {
   body += F("<p id='stage'>Stage: idle</p>");
   body += F("<p id='status'>Status: waiting for upload</p>");
   body += F("<p id='diag'>Diag: env=unknown, running=unknown, target=unknown, error=none(0)</p>");
+  body += F("<h2>Build/Config Diagnostics</h2>");
+  body += F("<pre id='cfg'>env=unknown\nboard=unknown\nflash_mode=unknown\npsram_mode=unknown\nmemory_type=unknown\npartitions=unknown\nlayout=unknown\nrunning_partition=unknown\ntarget_partition=unknown\nrunning_image_flash_mode=unknown\nupload_image_flash_mode=unknown</pre>");
   body += F("<p id='guidance'>Next step: choose a valid firmware.bin for esp32-s3-devkitc-1-n32r16v.</p>");
   body += F("<p><a href='/debug-log'>Open rolling OTA/SD debug log</a></p>");
   body += F("<p><a href='/'>Back</a></p>");
   body += F("<script>");
-  body += F("const f=document.getElementById('otaForm');const p=document.getElementById('uploadProgress');const st=document.getElementById('stage');const s=document.getElementById('status');const g=document.getElementById('guidance');const d=document.getElementById('diag');");
-  body += F("function setUi(j){st.textContent='Stage: '+j.stage;let msg='Status: '+j.message;if(j.in_progress){msg+=' ('+j.received+' bytes)';}s.textContent=msg;d.textContent='Diag: env='+j.build_env+', running='+j.running_partition+', target='+j.target_partition+', error='+j.error_name+'('+j.error_code+')';g.textContent='Next step: '+j.guidance;}");
+  body += F("const f=document.getElementById('otaForm');const p=document.getElementById('uploadProgress');const st=document.getElementById('stage');const s=document.getElementById('status');const g=document.getElementById('guidance');const d=document.getElementById('diag');const cfg=document.getElementById('cfg');");
+  body += F("function setUi(j){st.textContent='Stage: '+j.stage;let msg='Status: '+j.message;if(j.in_progress){msg+=' ('+j.received+' bytes)';}s.textContent=msg;d.textContent='Diag: env='+j.build_env+', running='+j.running_partition+', target='+j.target_partition+', error='+j.error_name+'('+j.error_code+')';const lines=['env='+j.build_env,'board='+j.build_board,'flash_mode='+j.build_flash_mode,'psram_mode='+j.build_psram_mode,'memory_type='+j.build_memory_type,'partitions='+j.build_partitions,'layout='+j.partition_layout,'running_partition='+j.running_partition,'target_partition='+j.target_partition,'running_image_flash_mode='+j.running_image_flash_mode,'upload_image_flash_mode='+j.upload_image_flash_mode];cfg.textContent=lines.join('\\n');g.textContent='Next step: '+j.guidance;}");
   body += F("f.addEventListener('submit',function(e){e.preventDefault();const file=document.getElementById('fw').files[0];if(!file){st.textContent='Stage: failed';s.textContent='Status: select firmware.bin first';g.textContent='Next step: choose firmware.bin then retry.';return;}const data=new FormData();data.append('firmware',file);const x=new XMLHttpRequest();x.open('POST','/ota',true);st.textContent='Stage: upload';s.textContent='Status: starting upload';g.textContent='Next step: keep this page open until a final result is shown.';x.upload.onprogress=function(ev){if(ev.lengthComputable){const pct=Math.round((ev.loaded/ev.total)*100);p.textContent='Upload progress: '+pct+'%';if(pct>=100){st.textContent='Stage: upload_complete';s.textContent='Status: upload complete; waiting for device validation/apply';}}};x.onreadystatechange=function(){if(x.readyState===4&&x.status>=400){s.textContent='Status: '+x.responseText;}};x.onerror=function(){st.textContent='Stage: failed';s.textContent='Status: upload failed (network error)';g.textContent='Next step: keep device powered, reconnect to AP, and retry.';};x.send(data);});");
   body += F("setInterval(function(){fetch('/api/ota/status').then(r=>r.json()).then(setUi).catch(()=>{});},800);");
   body += F("</script></body></html>");
@@ -975,7 +1094,23 @@ void handleOtaChunk() {
     gOtaStatus.stage = F("upload");
     gOtaStatus.message = F("starting OTA upload");
     gOtaStatus.guidance = F("Keep this page open while upload, validation, and apply complete.");
+    gOtaStatus.runningImageFlashMode = F("unknown");
+    gOtaStatus.uploadImageFlashMode = F("unknown");
     gOtaRestartPending = false;
+
+    gOtaSession.runningImageFlashModeKnown = false;
+    gOtaSession.headerChecked = false;
+    gOtaSession.headerByteCount = 0;
+
+    const esp_partition_t* running = esp_ota_get_running_partition();
+    if (running != nullptr) {
+      uint8_t runningHeader[3] = {0, 0, 0};
+      if (esp_partition_read(running, 0, runningHeader, sizeof(runningHeader)) == ESP_OK && runningHeader[0] == kEspImageMagicByte) {
+        gOtaSession.runningImageFlashModeKnown = true;
+        gOtaSession.runningImageFlashMode = runningHeader[2];
+        gOtaStatus.runningImageFlashMode = otaImageFlashModeName(runningHeader[2]);
+      }
+    }
 
     gOtaSession.target = esp_ota_get_next_update_partition(nullptr);
     if (gOtaSession.target == nullptr) {
@@ -1021,23 +1156,48 @@ void handleOtaChunk() {
     }
 
     gOtaSession.active = true;
-    gOtaSession.headerChecked = false;
   } else if (upload.status == UPLOAD_FILE_WRITE) {
     if (!gOtaStatus.inProgress || !gOtaSession.active) return;
 
     if (!gOtaSession.headerChecked && upload.currentSize > 0) {
-      gOtaSession.headerChecked = true;
-      if (upload.buf[0] != kEspImageMagicByte) {
-        esp_ota_abort(gOtaSession.handle);
-        resetOtaSession();
-        setOtaFailure(
-            F("precheck_failed"),
-            kOtaErrorBadMagic,
-            F("invalid_image_header"),
-            F("OTA blocked before validation/apply: invalid ESP image header"),
-            F("Selected file is not a valid ESP32 app image. Use firmware.bin built for esp32-s3-devkitc-1-n32r16v."));
-        serialAndDebugLog(F("OTA: PRECHECK FAILED (MAGIC BYTE)"));
-        return;
+      for (size_t i = 0; i < upload.currentSize && gOtaSession.headerByteCount < sizeof(gOtaSession.headerBytes); ++i) {
+        gOtaSession.headerBytes[gOtaSession.headerByteCount] = upload.buf[i];
+        ++gOtaSession.headerByteCount;
+      }
+
+      if (gOtaSession.headerByteCount == sizeof(gOtaSession.headerBytes)) {
+        gOtaSession.headerChecked = true;
+        if (gOtaSession.headerBytes[0] != kEspImageMagicByte) {
+          esp_ota_abort(gOtaSession.handle);
+          resetOtaSession();
+          setOtaFailure(
+              F("precheck_failed"),
+              kOtaErrorBadMagic,
+              F("invalid_image_header"),
+              F("OTA blocked before validation/apply: invalid ESP image header"),
+              F("Selected file is not a valid ESP32 app image. Use firmware.bin built for esp32-s3-devkitc-1-n32r16v."));
+          serialAndDebugLog(F("OTA: PRECHECK FAILED (MAGIC BYTE)"));
+          return;
+        }
+
+        const uint8_t uploadImageFlashMode = gOtaSession.headerBytes[2];
+        gOtaStatus.uploadImageFlashMode = otaImageFlashModeName(uploadImageFlashMode);
+        if (gOtaSession.runningImageFlashModeKnown && uploadImageFlashMode != gOtaSession.runningImageFlashMode) {
+          const String uploadMode = otaImageFlashModeName(uploadImageFlashMode);
+          const String runningMode = otaImageFlashModeName(gOtaSession.runningImageFlashMode);
+          const String msg = String(F("OTA blocked before validation/apply: uploaded image flash mode ")) + uploadMode +
+                             F(" mismatches running image flash mode ") + runningMode;
+          esp_ota_abort(gOtaSession.handle);
+          resetOtaSession();
+          setOtaFailure(
+              F("precheck_failed"),
+              kOtaErrorFlashModeMismatch,
+              F("flash_mode_mismatch"),
+              msg,
+              F("Use firmware.bin built for esp32-s3-devkitc-1-n32r16v with matching flash/PSRAM config. Verify values in this page's build/config diagnostics."));
+          serialAndDebugLog(F("OTA: PRECHECK FAILED (FLASH MODE MISMATCH)"));
+          return;
+        }
       }
     }
 
@@ -1235,9 +1395,16 @@ void setup() {
   delay(200);
   serialAndDebugLog(F("BOOT: OK"));
   refreshOtaDiagnostics();
-  serialAndDebugLogf("OTA: BUILD ENV=%s BOARD=%s", gOtaStatus.buildEnv.c_str(), kExpectedBoardTarget);
+  serialAndDebugLogf("OTA: BUILD ENV=%s BOARD=%s", gOtaStatus.buildEnv.c_str(), gOtaStatus.buildBoard.c_str());
+  serialAndDebugLogf("OTA: BUILD CONFIG board=%s flash=%s psram=%s memory=%s partitions=%s",
+                     gOtaStatus.buildBoard.c_str(),
+                     gOtaStatus.buildFlashMode.c_str(),
+                     gOtaStatus.buildPsramMode.c_str(),
+                     gOtaStatus.buildMemoryType.c_str(),
+                     gOtaStatus.buildPartitions.c_str());
   serialAndDebugLogf("OTA: RUNNING PARTITION=%s", gOtaStatus.runningPartition.c_str());
   serialAndDebugLogf("OTA: TARGET PARTITION=%s", gOtaStatus.targetPartition.c_str());
+  serialAndDebugLogf("OTA: PARTITION LAYOUT=%s", gOtaStatus.partitionLayout.c_str());
 
   if (mountSd()) {
     // Boot smoke regex expects RTC line; we only emit a placeholder in v0.1 firmware.

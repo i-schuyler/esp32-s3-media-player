@@ -34,6 +34,30 @@ read_env_value() {
 ' platformio.ini
 }
 
+read_env_block() {
+  awk -v target="[env:${env_name}]" '
+  $0==target {in_env=1; next}
+  in_env && /^\[/ {in_env=0}
+  in_env {print}
+' platformio.ini
+}
+
+require_build_flag_contains() {
+  local env_block="$1"
+  local flag_name="$2"
+  local expected_value="$3"
+  local line
+  line="$(printf '%s\n' "$env_block" | grep -F -- "-D${flag_name}=" | head -n1 || true)"
+  if [[ -z "$line" ]]; then
+    echo "::error::Missing build flag -D${flag_name}=... in [env:${env_name}]"
+    exit 1
+  fi
+  if [[ "$line" != *"${expected_value}"* ]]; then
+    echo "::error::build flag ${flag_name} mismatch in [env:${env_name}]. Expected value containing '${expected_value}', found line: ${line}"
+    exit 1
+  fi
+}
+
 board_value="$(read_env_value board)"
 if [[ "$board_value" != "$expected_board" ]]; then
   echo "::error::board mismatch in [env:${env_name}]. Expected ${expected_board}, found ${board_value:-<empty>}"
@@ -69,6 +93,13 @@ if [[ "$partitions_value" != "$expected_partitions" ]]; then
   echo "::error::board_build.partitions mismatch in [env:${env_name}]. Expected ${expected_partitions}, found ${partitions_value:-<empty>}"
   exit 1
 fi
+
+env_block="$(read_env_block)"
+require_build_flag_contains "$env_block" "FW_BUILD_BOARD" "$expected_board"
+require_build_flag_contains "$env_block" "FW_FLASH_MODE" "$expected_flash_mode"
+require_build_flag_contains "$env_block" "FW_MEMORY_TYPE" "$expected_memory_type"
+require_build_flag_contains "$env_block" "FW_PSRAM_MODE" "$expected_psram_type"
+require_build_flag_contains "$env_block" "FW_PARTITIONS_CSV" "$expected_partitions"
 
 if [[ ! -f "$expected_partitions" ]]; then
   echo "::error::Partition file not found: ${expected_partitions}"
