@@ -12,6 +12,26 @@
 - PR: <url>
 - Issue: <url>
 
+## [v0.1.10] - 2026-04-06
+
+### Added
+
+* Issue #39 implementation plan mapping this release-prep/docs slice to `ACCEPTANCE.md` and `docs/SMOKE_TEST_SPEC.md`.
+
+### Changed
+
+* Prepared next release automation input by adding a new newest-first changelog release entry sourced from current `main`.
+* SD bring-up diagnostics now clearly separate card-communication preflight failures from init/select and mount/filesystem failures for known-good FAT32 card triage (latest merged SD bring-up work on `main`, via Issue #37 / PR #38).
+
+### Fixed
+
+* Release-prep gap where the latest merged SD bring-up reliability work was not yet represented in the top changelog entry used by automated tag/release asset creation.
+
+### Notes
+
+* PR:
+* Issue: https://github.com/i-schuyler/esp32-s3-media-player/issues/39
+
 ## [v0.1.9] - 2026-04-06
 
 ### Added
