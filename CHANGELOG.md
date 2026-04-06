@@ -12,6 +12,27 @@
 - PR: <url>
 - Issue: <url>
 
+## [v0.1.11] - 2026-04-06
+
+### Added
+
+* Issue #41 implementation plan mapping deeper SD init diagnostics scope to `ACCEPTANCE.md` and `docs/SMOKE_TEST_SPEC.md`.
+* Browser-visible SD diagnostics now include actual SD pin map in use (CS/SCK/MISO/MOSI), every attempted SPI init speed, and bounded attempt-level init trace details.
+
+### Changed
+
+* Existing SD bring-up path now records attempt-level CMD0 outcome and card-init stage progression into the existing rolling debug log for browser-only troubleshooting.
+* `/api/sd/status` and `/sd-diagnostics` now expose deeper SD init visibility while keeping diagnostics bounded/readable.
+
+### Fixed
+
+* Reduced blind spots when SD bring-up fails before mount by surfacing lower-level init progress/failure detail without requiring USB serial logs.
+
+### Notes
+
+* PR:
+* Issue: https://github.com/i-schuyler/esp32-s3-media-player/issues/41
+
 ## [v0.1.10] - 2026-04-06
 
 ### Added

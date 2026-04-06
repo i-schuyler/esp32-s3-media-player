@@ -30,6 +30,7 @@ constexpr const char* kExpectedBoardTarget = "esp32-s3-devkitc-1-n32r16v";
 constexpr size_t kChunkSize = 2048;
 constexpr size_t kDebugLogCapacity = 120;
 constexpr size_t kDebugLogLineMaxLen = 220;
+constexpr size_t kSdInitTraceMaxLen = 1400;
 constexpr uint8_t kEspImageMagicByte = 0xE9;
 constexpr int32_t kOtaErrorSizeMismatch = 255;
 constexpr int32_t kOtaErrorBadMagic = 254;
@@ -105,6 +106,9 @@ SdFormatStatus gSdFormatStatus;
 String gDebugLog[kDebugLogCapacity];
 size_t gDebugLogNext = 0;
 size_t gDebugLogCount = 0;
+String gSdPinMap;
+String gSdAttemptedSpeeds;
+String gSdInitTrace;
 
 String htmlEscape(const String& in) {
   String out;
@@ -401,6 +405,71 @@ String sdMisoIdleHint() {
   return digitalRead(kSdMisoPin) == LOW ? F("miso_idle=low") : F("miso_idle=high");
 }
 
+String sdPinMapSummary() {
+  String pinMap;
+  pinMap.reserve(64);
+  pinMap += F("CS=IO");
+  pinMap += String(static_cast<unsigned long>(kSdCsPin));
+  pinMap += F(" SCK=IO");
+  pinMap += String(static_cast<unsigned long>(kSdSckPin));
+  pinMap += F(" MISO=IO");
+  pinMap += String(static_cast<unsigned long>(kSdMisoPin));
+  pinMap += F(" MOSI=IO");
+  pinMap += String(static_cast<unsigned long>(kSdMosiPin));
+  return pinMap;
+}
+
+void appendSdInitTraceLine(const String& line) {
+  if (gSdInitTrace.length() >= kSdInitTraceMaxLen) return;
+  if (gSdInitTrace.length() > 0) {
+    if (gSdInitTrace.length() + 1 > kSdInitTraceMaxLen) return;
+    gSdInitTrace += '\n';
+  }
+  const size_t available = kSdInitTraceMaxLen - gSdInitTrace.length();
+  if (line.length() <= available) {
+    gSdInitTrace += line;
+    return;
+  }
+  if (available <= 3) {
+    gSdInitTrace += F("...");
+    return;
+  }
+  gSdInitTrace += line.substring(0, available - 3);
+  gSdInitTrace += F("...");
+}
+
+void resetSdInitTrace(bool allowFormat) {
+  gSdPinMap = sdPinMapSummary();
+  gSdAttemptedSpeeds = "";
+  gSdInitTrace = "";
+  appendSdInitTraceLine(String(F("start allow_format=")) + (allowFormat ? F("true") : F("false")));
+  appendSdInitTraceLine(String(F("pin_map ")) + gSdPinMap);
+}
+
+void recordSdAttemptedSpeed(uint32_t hz) {
+  if (gSdAttemptedSpeeds.length() > 0) gSdAttemptedSpeeds += F(", ");
+  gSdAttemptedSpeeds += sdSpiSpeedLabel(hz);
+}
+
+void appendSdTraceToDebugLog() {
+  if (gSdInitTrace.length() == 0) return;
+  size_t start = 0;
+  while (start <= gSdInitTrace.length()) {
+    const int newline = gSdInitTrace.indexOf('\n', start);
+    String line;
+    if (newline < 0) {
+      line = gSdInitTrace.substring(start);
+      start = gSdInitTrace.length() + 1;
+    } else {
+      line = gSdInitTrace.substring(start, static_cast<size_t>(newline));
+      start = static_cast<size_t>(newline) + 1;
+    }
+    if (line.length() > 0) {
+      serialAndDebugLog(String(F("SD: TRACE ")) + line);
+    }
+  }
+}
+
 bool sdCardRespondsToCmd0() {
   SPI.beginTransaction(SPISettings(kSdInitHz, MSBFIRST, SPI_MODE0));
   digitalWrite(kSdCsPin, HIGH);
@@ -447,22 +516,28 @@ void primeSdSpiBus() {
   SPI.endTransaction();
 }
 
-bool mountSdAttempt(uint32_t hz, bool allowFormat, String& detail, SdFailureStage& stage, bool& capacityKnown) {
+bool mountSdAttempt(uint32_t hz, bool allowFormat, uint8_t attemptNumber, String& detail, SdFailureStage& stage, bool& capacityKnown) {
   const String misoHint = sdMisoIdleHint();
   const bool cmd0Response = sdCardRespondsToCmd0();
+  String prefix = String(F("attempt#")) + String(static_cast<unsigned long>(attemptNumber)) +
+                  F(" speed=") + sdSpiSpeedLabel(hz) + F(" cmd0=") + (cmd0Response ? F("ok") : F("timeout")) +
+                  F(" ") + misoHint;
 
   if (!SD.begin(kSdCsPin, SPI, hz, kSdMountPoint, 5, allowFormat)) {
     const uint8_t cardType = SD.cardType();
     if (!cmd0Response) {
       stage = SdFailureStage::kCardCommFailure;
+      appendSdInitTraceLine(prefix + F(" stage=card_comm_failure sd_begin=failed cardType=") + sdCardTypeLabel(cardType));
       detail = String(F("no card response (CMD0 timeout); SD.begin failed at ")) + sdSpiSpeedLabel(hz) +
                F(" (cardType=") + sdCardTypeLabel(cardType) + F(", ") + misoHint + F(")");
     } else if (cardType == CARD_NONE) {
       stage = SdFailureStage::kInitBusFailure;
+      appendSdInitTraceLine(prefix + F(" stage=init_bus_failure sd_begin=failed cardType=none"));
       detail = String(F("card responded but init/select failed at ")) + sdSpiSpeedLabel(hz) +
                F(" (cardType=none, ") + misoHint + F(")");
     } else {
       stage = SdFailureStage::kMountFsFailure;
+      appendSdInitTraceLine(prefix + F(" stage=mount_fs_failure sd_begin=failed cardType=") + sdCardTypeLabel(cardType));
       detail = String(F("SD.begin failed after card init at ")) + sdSpiSpeedLabel(hz) +
                F(" after card response (cardType=") + sdCardTypeLabel(cardType) + F(", ") + misoHint + F(")");
     }
@@ -472,6 +547,7 @@ bool mountSdAttempt(uint32_t hz, bool allowFormat, String& detail, SdFailureStag
   const uint8_t cardType = SD.cardType();
   if (cardType == CARD_NONE) {
     stage = cmd0Response ? SdFailureStage::kInitBusFailure : SdFailureStage::kCardCommFailure;
+    appendSdInitTraceLine(prefix + F(" stage=post_begin_card_none sd_begin=ok cardType=none"));
     detail = String(F("card not detected after begin at ")) + sdSpiSpeedLabel(hz) +
              F(" (cmd0=") + (cmd0Response ? F("ok") : F("timeout")) + F(", ") + misoHint + F(")");
     return false;
@@ -480,6 +556,7 @@ bool mountSdAttempt(uint32_t hz, bool allowFormat, String& detail, SdFailureStag
   File root = SD.open("/");
   if (!root || !root.isDirectory()) {
     stage = SdFailureStage::kReadRootFailure;
+    appendSdInitTraceLine(prefix + F(" stage=read_root_failure sd_begin=ok cardType=") + sdCardTypeLabel(cardType) + F(" root=open_failed"));
     detail = String(F("root open failed at ")) + sdSpiSpeedLabel(hz);
     return false;
   }
@@ -492,6 +569,8 @@ bool mountSdAttempt(uint32_t hz, bool allowFormat, String& detail, SdFailureStag
     detail += F(" (capacity query unavailable)");
   }
   stage = SdFailureStage::kOk;
+  appendSdInitTraceLine(prefix + F(" stage=ok sd_begin=ok cardType=") + sdCardTypeLabel(cardType) +
+                        F(" root=open_ok capacity_known=") + (capacityKnown ? F("true") : F("false")));
   return true;
 }
 
@@ -500,13 +579,17 @@ bool mountSdWithRetries(bool allowFormat, String& detail, SdFailureStage& stage,
   detail = F("no mount attempts yet");
   capacityKnown = false;
   usedHz = kSdSpiHz;
+  resetSdInitTrace(allowFormat);
+  uint8_t attemptNumber = 0;
 
   for (const uint32_t hz : kSdSpiRetryHz) {
     for (uint8_t attempt = 0; attempt < kSdAttemptsPerSpeed; ++attempt) {
+      ++attemptNumber;
+      recordSdAttemptedSpeed(hz);
       SD.end();
       SPI.end();
       primeSdSpiBus();
-      if (mountSdAttempt(hz, allowFormat, detail, stage, capacityKnown)) {
+      if (mountSdAttempt(hz, allowFormat, attemptNumber, detail, stage, capacityKnown)) {
         usedHz = hz;
         return true;
       }
@@ -724,6 +807,12 @@ void handleSdStatusApi() {
   json += jsonEscape(sdStageGuidance(gSdStatus.stage));
   json += "\",\"detail\":\"";
   json += jsonEscape(gSdStatus.detail);
+  json += "\",\"pin_map\":\"";
+  json += jsonEscape(gSdPinMap);
+  json += "\",\"attempted_spi_speeds\":\"";
+  json += jsonEscape(gSdAttemptedSpeeds);
+  json += "\",\"init_trace\":\"";
+  json += jsonEscape(gSdInitTrace);
   json += "\"}";
   server.send(200, F("application/json"), json);
 }
@@ -744,6 +833,17 @@ void handleSdDiagnosticsPage() {
     body += F("<p><strong>Detail:</strong> ");
     body += htmlEscape(gSdStatus.detail);
     body += F("</p>");
+  }
+  body += F("<p><strong>Pin map in use:</strong> ");
+  body += htmlEscape(gSdPinMap);
+  body += F("</p>");
+  body += F("<p><strong>Attempted SPI init speeds:</strong> ");
+  body += gSdAttemptedSpeeds.length() > 0 ? htmlEscape(gSdAttemptedSpeeds) : F("(none)");
+  body += F("</p>");
+  if (gSdInitTrace.length() > 0) {
+    body += F("<p><strong>Init trace (bounded):</strong></p><pre style='white-space:pre-wrap;background:#111;color:#0f0;padding:12px;border-radius:8px;'>");
+    body += htmlEscape(gSdInitTrace);
+    body += F("</pre>");
   }
   body += F("<p><a href='/debug-log'>Open rolling OTA/SD debug log</a></p>");
   body += F("<p>Serial logs remain available for deeper debugging.</p>");
@@ -1414,12 +1514,18 @@ bool mountSd() {
   if (!mountSdWithRetries(false, detail, stage, capacityKnown, usedHz)) {
     setSdStatus(stage, false, detail);
     serialAndDebugLog(F("SD: MOUNT FAILED"));
+    serialAndDebugLogf("SD: PIN MAP %s", gSdPinMap.c_str());
+    serialAndDebugLogf("SD: ATTEMPTED SPI %s", gSdAttemptedSpeeds.length() > 0 ? gSdAttemptedSpeeds.c_str() : "none");
+    appendSdTraceToDebugLog();
     serialAndDebugLogf("SD: DIAG STAGE=%s", sdStageCode(gSdStatus.stage).c_str());
     serialAndDebugLogf("SD: DETAIL=%s", detail.c_str());
     return false;
   }
 
   serialAndDebugLog(F("SD: MOUNTED"));
+  serialAndDebugLogf("SD: PIN MAP %s", gSdPinMap.c_str());
+  serialAndDebugLogf("SD: ATTEMPTED SPI %s", gSdAttemptedSpeeds.c_str());
+  appendSdTraceToDebugLog();
   if (!capacityKnown) {
     serialAndDebugLog(F("SD: CAPACITY UNKNOWN (continuing because root access works)"));
     setSdStatus(SdFailureStage::kOk, true, detail);
