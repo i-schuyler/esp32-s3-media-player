@@ -12,6 +12,27 @@
 - PR: <url>
 - Issue: <url>
 
+## [v0.1.13] - 2026-04-06
+
+### Added
+
+* Issue #47 implementation plan mapping SD SPI ownership/init-flow scope to `ACCEPTANCE.md` and `docs/SMOKE_TEST_SPEC.md`.
+* SD init trace now explicitly records an authoritative flow (`sd_begin_then_cmd0_diag_on_failure`) with retained pin map/speed/outcome diagnostics.
+
+### Changed
+
+* SD bring-up now uses a dedicated SPI instance for SD ownership isolation instead of the global shared SPI object.
+* Per-attempt init sequence is simplified to `prime bus -> SD.begin`, with raw CMD0 diagnostics captured only on failed/ambiguous attempts to reduce probe/init overlap.
+
+### Fixed
+
+* Reduced ambiguity from overlapping raw-probe and `SD.begin` behavior by making `SD.begin` the authoritative bring-up step while keeping browser-visible root-cause diagnostics.
+
+### Notes
+
+* PR:
+* Issue: https://github.com/i-schuyler/esp32-s3-media-player/issues/47
+
 ## [v0.1.12] - 2026-04-06
 
 ### Added
