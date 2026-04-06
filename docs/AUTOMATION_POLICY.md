@@ -29,6 +29,6 @@ Automation MUST stop and ask for human input when:
 - After a PR is merged to `main`, `.github/workflows/release.yml` reads the newest changelog release entry (`## [vX.Y.Z] - YYYY-MM-DD`) and uses that version.
 - The release workflow builds `esp32-s3-devkitc-1-n32r16v`, tags the merge commit, creates the GitHub release, and uploads `media_server_vX_X_X.bin`.
 - Before building release/manual-attach firmware artifacts, workflows stamp `src/firmware_version.h` with the target release version/tag so the main UI page shows the shipped firmware version.
-- Release and manual-attach workflows must verify PlatformIO env/board/framework/flash/PSRAM/partition parity (`esp32-s3-devkitc-1-n32r16v`) before building firmware artifacts.
+- Release and manual-attach workflows must verify PlatformIO env/board/flash-size/flash-mode/framework/memory-type/PSRAM-type/partition parity (`esp32-s3-devkitc-1-n32r16v`) before building firmware artifacts.
 - If changelog parsing, tag creation, or firmware artifact checks fail, the release job stops with explicit errors and does not publish a release.
 - For an already-existing tag/release missing `media_server_vX_X_X.bin`, run `.github/workflows/manual-release-attach.yml` via `workflow_dispatch` and provide the existing tag (for example `v0.1.3`).

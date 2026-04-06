@@ -8,6 +8,7 @@ expected_framework="${4:-arduino}"
 expected_flash_mode="${5:-opi}"
 expected_memory_type="${6:-opi_opi}"
 expected_psram_type="${7:-opi}"
+expected_flash_size="${8:-32MB}"
 
 if [[ ! -f platformio.ini ]]; then
   echo "::error::platformio.ini not found."
@@ -76,9 +77,15 @@ if [[ "$flash_mode_value" != "$expected_flash_mode" ]]; then
   exit 1
 fi
 
-memory_type_value="$(read_env_value board_build.memory_type)"
+legacy_memory_type_value="$(read_env_value board_build.memory_type)"
+if [[ -n "$legacy_memory_type_value" ]]; then
+  echo "::error::Use board_build.arduino.memory_type (not board_build.memory_type) in [env:${env_name}] to avoid ESP32-S3 memory-mode ambiguity."
+  exit 1
+fi
+
+memory_type_value="$(read_env_value board_build.arduino.memory_type)"
 if [[ "$memory_type_value" != "$expected_memory_type" ]]; then
-  echo "::error::board_build.memory_type mismatch in [env:${env_name}]. Expected ${expected_memory_type}, found ${memory_type_value:-<empty>}"
+  echo "::error::board_build.arduino.memory_type mismatch in [env:${env_name}]. Expected ${expected_memory_type}, found ${memory_type_value:-<empty>}"
   exit 1
 fi
 
@@ -94,11 +101,18 @@ if [[ "$partitions_value" != "$expected_partitions" ]]; then
   exit 1
 fi
 
+flash_size_value="$(read_env_value board_upload.flash_size)"
+if [[ "$flash_size_value" != "$expected_flash_size" ]]; then
+  echo "::error::board_upload.flash_size mismatch in [env:${env_name}]. Expected ${expected_flash_size}, found ${flash_size_value:-<empty>}"
+  exit 1
+fi
+
 env_block="$(read_env_block)"
 require_build_flag_contains "$env_block" "FW_BUILD_BOARD" "$expected_board"
+require_build_flag_contains "$env_block" "FW_FLASH_SIZE" "$expected_flash_size"
 require_build_flag_contains "$env_block" "FW_FLASH_MODE" "$expected_flash_mode"
 require_build_flag_contains "$env_block" "FW_MEMORY_TYPE" "$expected_memory_type"
-require_build_flag_contains "$env_block" "FW_PSRAM_MODE" "$expected_psram_type"
+require_build_flag_contains "$env_block" "FW_PSRAM_TYPE" "$expected_psram_type"
 require_build_flag_contains "$env_block" "FW_PARTITIONS_CSV" "$expected_partitions"
 
 if [[ ! -f "$expected_partitions" ]]; then
@@ -142,4 +156,4 @@ if ! grep -Fq "pio run -e ${env_name} -t upload" README.md; then
   exit 1
 fi
 
-echo "PARITY: OK env=${env_name} framework=${expected_framework} board=${expected_board} flash_mode=${expected_flash_mode} memory_type=${expected_memory_type} psram_type=${expected_psram_type} partitions=${expected_partitions} app0=${app0_size_hex} app1=${app1_size_hex}"
+echo "PARITY: OK env=${env_name} framework=${expected_framework} board=${expected_board} flash_size=${expected_flash_size} flash_mode=${expected_flash_mode} memory_type=${expected_memory_type} psram_type=${expected_psram_type} partitions=${expected_partitions} app0=${app0_size_hex} app1=${app1_size_hex}"
