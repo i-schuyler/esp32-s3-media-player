@@ -61,10 +61,30 @@ Manual verification (phone VLC or curl from laptop):
 This is a placeholder until we add local audio-out. For now, streaming playback on phone is the test.
 
 ## OTA web update (manual)
-Manual verification:
-- Open `http://192.168.4.1/ota`.
-- Upload a valid `firmware.bin` for `esp32-s3-devkitc-1-n32r16v`.
-- Expect browser upload progress updates plus explicit OTA stage text (upload, upload_complete, precheck_failed when blocked early, validate/apply, final success/failure).
-- Expect OTA build/config diagnostics block to include env, board, flash size, flash mode, memory type, PSRAM type, partition info, and running/target partition details for failure triage.
-- Success path: status indicates success and device reboots.
-- Failure path (interrupt upload/network or invalid image): browser status indicates failure with actionable next steps and app remains reachable after retry.
+Purpose: preserve known-good OTA behavior with a lightweight repeatable regression check.
+
+When to run:
+- Required before merge for OTA-sensitive changes (see `docs/AUTOMATION_POLICY.md`).
+- Optional for non-OTA-sensitive docs-only changes.
+
+Known-good baseline asset:
+- Source: GitHub Releases
+- Version: `v0.1.8`
+- Artifact: release `firmware.bin` built for `esp32-s3-devkitc-1-n32r16v`
+
+Manual regression procedure:
+1. Open `http://192.168.4.1/ota`.
+2. Upload the known-good `v0.1.8` release `firmware.bin`.
+3. Verify OTA stage/status reaches explicit success (after upload/validate/apply stages) with no terminal failure.
+4. Verify device reboots and reconnects to AP/UI successfully.
+5. Verify displayed firmware version after reboot changed to the uploaded version as expected.
+6. Verify OTA diagnostics (if present) show running/target partition details consistent with a successful apply/switch.
+7. Verify core app pages still load after reboot:
+   - `http://192.168.4.1/`
+   - `http://192.168.4.1/files`
+   - `http://192.168.4.1/ota`
+8. Re-run streaming spot-check (`Range: bytes=0-1023`) to confirm no OTA-adjacent regression in existing media flow.
+
+Failure triage notes:
+- If upload/network is interrupted or image is invalid, expect explicit failure status with actionable guidance.
+- After a failed OTA attempt, app should remain reachable for retry/recovery.

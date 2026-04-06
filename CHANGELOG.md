@@ -12,6 +12,26 @@
 - PR: <url>
 - Issue: <url>
 
+## [v0.1.9] - 2026-04-06
+
+### Added
+
+* Issue #35 implementation plan mapping OTA regression-protection scope to `ACCEPTANCE.md` and `docs/SMOKE_TEST_SPEC.md`.
+* Explicit OTA retest trigger list in `docs/AUTOMATION_POLICY.md` for OTA-sensitive change classes.
+
+### Changed
+
+* OTA smoke spec now defines a lightweight regression procedure anchored to the known-good `v0.1.8` release asset flow (success status, reboot/reconnect, version check, partition diagnostics, and post-reboot core-page checks).
+
+### Fixed
+
+* Documentation/process gap where OTA-sensitive changes were not clearly required to run OTA smoke retest before merge.
+
+### Notes
+
+* PR:
+* Issue: https://github.com/i-schuyler/esp32-s3-media-player/issues/35
+
 ## [v0.1.8] - 2026-04-06
 
 ### Added
