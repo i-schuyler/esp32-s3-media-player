@@ -21,6 +21,7 @@ constexpr uint8_t kSdMosiPin = 10;
 constexpr uint32_t kSdSpiHz = 4000000;
 constexpr uint32_t kSdInitHz = 400000;
 constexpr uint8_t kSdInitClockBytes = 10;
+constexpr uint8_t kSdCmdResponsePolls = 16;
 constexpr uint8_t kSdAttemptsPerSpeed = 2;
 constexpr uint32_t kSdSpiRetryHz[] = {kSdInitHz, 1000000, 2000000, kSdSpiHz};
 constexpr const char* kSdMountPoint = "/sd";
@@ -109,6 +110,16 @@ size_t gDebugLogCount = 0;
 String gSdPinMap;
 String gSdAttemptedSpeeds;
 String gSdInitTrace;
+
+struct SdCmd0Probe {
+  bool dummyClocksIssued = false;
+  bool csIdleHigh = false;
+  bool csAssertedLow = false;
+  bool csReleasedHigh = false;
+  uint8_t r1 = 0xFF;
+  uint8_t polls = 0;
+  uint32_t hz = kSdInitHz;
+};
 
 String htmlEscape(const String& in) {
   String out;
@@ -419,6 +430,19 @@ String sdPinMapSummary() {
   return pinMap;
 }
 
+String sdHexByte(uint8_t value) {
+  String hex = String(static_cast<unsigned long>(value), HEX);
+  hex.toUpperCase();
+  if (hex.length() < 2) hex = "0" + hex;
+  return String(F("0x")) + hex;
+}
+
+String sdCmd0OutcomeLabel(const SdCmd0Probe& probe) {
+  if (probe.r1 == 0x01) return F("idle");
+  if ((probe.r1 & 0x80) == 0) return String(F("resp_")) + sdHexByte(probe.r1);
+  return F("timeout");
+}
+
 void appendSdInitTraceLine(const String& line) {
   if (gSdInitTrace.length() >= kSdInitTraceMaxLen) return;
   if (gSdInitTrace.length() > 0) {
@@ -443,6 +467,7 @@ void resetSdInitTrace(bool allowFormat) {
   gSdAttemptedSpeeds = "";
   gSdInitTrace = "";
   appendSdInitTraceLine(String(F("start allow_format=")) + (allowFormat ? F("true") : F("false")));
+  appendSdInitTraceLine(F("flow preclock_cmd0_then_sd_begin"));
   appendSdInitTraceLine(String(F("pin_map ")) + gSdPinMap);
 }
 
@@ -470,14 +495,19 @@ void appendSdTraceToDebugLog() {
   }
 }
 
-bool sdCardRespondsToCmd0() {
-  SPI.beginTransaction(SPISettings(kSdInitHz, MSBFIRST, SPI_MODE0));
+SdCmd0Probe sdProbeCmd0(uint32_t hz) {
+  SdCmd0Probe probe;
+  probe.hz = hz;
+  SPI.beginTransaction(SPISettings(hz, MSBFIRST, SPI_MODE0));
   digitalWrite(kSdCsPin, HIGH);
+  probe.csIdleHigh = (digitalRead(kSdCsPin) == HIGH);
   for (uint8_t i = 0; i < kSdInitClockBytes; ++i) {
     SPI.transfer(0xFF);
   }
+  probe.dummyClocksIssued = true;
 
   digitalWrite(kSdCsPin, LOW);
+  probe.csAssertedLow = (digitalRead(kSdCsPin) == LOW);
   SPI.transfer(0xFF);
   SPI.transfer(0x40);
   SPI.transfer(0x00);
@@ -487,15 +517,18 @@ bool sdCardRespondsToCmd0() {
   SPI.transfer(0x95);
 
   uint8_t r1 = 0xFF;
-  for (uint8_t i = 0; i < 10; ++i) {
+  for (uint8_t i = 0; i < kSdCmdResponsePolls; ++i) {
     r1 = SPI.transfer(0xFF);
+    ++probe.polls;
     if ((r1 & 0x80) == 0) break;
   }
 
   digitalWrite(kSdCsPin, HIGH);
+  probe.csReleasedHigh = (digitalRead(kSdCsPin) == HIGH);
   SPI.transfer(0xFF);
   SPI.endTransaction();
-  return r1 == 0x01;
+  probe.r1 = r1;
+  return probe;
 }
 
 void primeSdSpiBus() {
@@ -509,47 +542,53 @@ void primeSdSpiBus() {
   delay(2);
 
   SPI.begin(kSdSckPin, kSdMisoPin, kSdMosiPin, kSdCsPin);
-  SPI.beginTransaction(SPISettings(kSdInitHz, MSBFIRST, SPI_MODE0));
-  for (uint8_t i = 0; i < kSdInitClockBytes; ++i) {
-    SPI.transfer(0xFF);
-  }
-  SPI.endTransaction();
 }
 
 bool mountSdAttempt(uint32_t hz, bool allowFormat, uint8_t attemptNumber, String& detail, SdFailureStage& stage, bool& capacityKnown) {
   const String misoHint = sdMisoIdleHint();
-  const bool cmd0Response = sdCardRespondsToCmd0();
+  const SdCmd0Probe cmd0Probe = sdProbeCmd0(kSdInitHz);
+  const bool cmd0IdleResponse = (cmd0Probe.r1 == 0x01);
+  const bool cmd0AnyResponse = (cmd0Probe.r1 != 0xFF) && ((cmd0Probe.r1 & 0x80) == 0);
   String prefix = String(F("attempt#")) + String(static_cast<unsigned long>(attemptNumber)) +
-                  F(" speed=") + sdSpiSpeedLabel(hz) + F(" cmd0=") + (cmd0Response ? F("ok") : F("timeout")) +
+                  F(" speed=") + sdSpiSpeedLabel(hz) +
+                  F(" cmd0_hz=") + sdSpiSpeedLabel(cmd0Probe.hz) +
+                  F(" cmd0=") + sdCmd0OutcomeLabel(cmd0Probe) +
+                  F(" cmd0_r1=") + sdHexByte(cmd0Probe.r1) +
+                  F(" cmd0_polls=") + String(static_cast<unsigned long>(cmd0Probe.polls)) +
+                  F(" dummy_clocks=") + (cmd0Probe.dummyClocksIssued ? F("yes") : F("no")) +
+                  F(" cs_idle_high=") + (cmd0Probe.csIdleHigh ? F("yes") : F("no")) +
+                  F(" cs_assert_low=") + (cmd0Probe.csAssertedLow ? F("yes") : F("no")) +
+                  F(" cs_release_high=") + (cmd0Probe.csReleasedHigh ? F("yes") : F("no")) +
                   F(" ") + misoHint;
 
   if (!SD.begin(kSdCsPin, SPI, hz, kSdMountPoint, 5, allowFormat)) {
     const uint8_t cardType = SD.cardType();
-    if (!cmd0Response) {
+    if (!cmd0AnyResponse) {
       stage = SdFailureStage::kCardCommFailure;
       appendSdInitTraceLine(prefix + F(" stage=card_comm_failure sd_begin=failed cardType=") + sdCardTypeLabel(cardType));
       detail = String(F("no card response (CMD0 timeout); SD.begin failed at ")) + sdSpiSpeedLabel(hz) +
-               F(" (cardType=") + sdCardTypeLabel(cardType) + F(", ") + misoHint + F(")");
+               F(" (cmd0_r1=") + sdHexByte(cmd0Probe.r1) + F(", cardType=") + sdCardTypeLabel(cardType) + F(", ") + misoHint + F(")");
     } else if (cardType == CARD_NONE) {
       stage = SdFailureStage::kInitBusFailure;
       appendSdInitTraceLine(prefix + F(" stage=init_bus_failure sd_begin=failed cardType=none"));
       detail = String(F("card responded but init/select failed at ")) + sdSpiSpeedLabel(hz) +
-               F(" (cardType=none, ") + misoHint + F(")");
+               F(" (cmd0_r1=") + sdHexByte(cmd0Probe.r1) + F(", cardType=none, ") + misoHint + F(")");
     } else {
       stage = SdFailureStage::kMountFsFailure;
       appendSdInitTraceLine(prefix + F(" stage=mount_fs_failure sd_begin=failed cardType=") + sdCardTypeLabel(cardType));
       detail = String(F("SD.begin failed after card init at ")) + sdSpiSpeedLabel(hz) +
-               F(" after card response (cardType=") + sdCardTypeLabel(cardType) + F(", ") + misoHint + F(")");
+               F(" after card response (cmd0_r1=") + sdHexByte(cmd0Probe.r1) + F(", cardType=") + sdCardTypeLabel(cardType) + F(", ") + misoHint + F(")");
     }
     return false;
   }
 
   const uint8_t cardType = SD.cardType();
   if (cardType == CARD_NONE) {
-    stage = cmd0Response ? SdFailureStage::kInitBusFailure : SdFailureStage::kCardCommFailure;
+    stage = cmd0AnyResponse ? SdFailureStage::kInitBusFailure : SdFailureStage::kCardCommFailure;
     appendSdInitTraceLine(prefix + F(" stage=post_begin_card_none sd_begin=ok cardType=none"));
     detail = String(F("card not detected after begin at ")) + sdSpiSpeedLabel(hz) +
-             F(" (cmd0=") + (cmd0Response ? F("ok") : F("timeout")) + F(", ") + misoHint + F(")");
+             F(" (cmd0=") + (cmd0IdleResponse ? F("idle") : sdCmd0OutcomeLabel(cmd0Probe)) +
+             F(", cmd0_r1=") + sdHexByte(cmd0Probe.r1) + F(", ") + misoHint + F(")");
     return false;
   }
 
