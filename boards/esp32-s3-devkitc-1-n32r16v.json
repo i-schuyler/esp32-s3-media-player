@@ -2,7 +2,8 @@
   "build": {
     "arduino": {
       "ldscript": "esp32s3_out.ld",
-      "partitions": "default_8MB.csv"
+      "partitions": "default_8MB.csv",
+      "memory_type": "opi_opi"
     },
     "core": "esp32",
     "extra_flags": [
@@ -20,7 +21,6 @@
       ]
     ],
     "mcu": "esp32s3",
-    "memory_type": "opi_opi",
     "variant": "esp32s3"
   },
   "connectivity": [

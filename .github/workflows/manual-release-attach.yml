@@ -19,6 +19,7 @@ jobs:
       EXPECTED_BOARD: esp32-s3-devkitc-1-n32r16v
       EXPECTED_PARTITIONS: partitions/partitions_32mb.csv
       EXPECTED_FRAMEWORK: arduino
+      EXPECTED_FLASH_SIZE: 32MB
       EXPECTED_FLASH_MODE: opi
       EXPECTED_MEMORY_TYPE: opi_opi
       EXPECTED_PSRAM_TYPE: opi
@@ -91,7 +92,8 @@ jobs:
             "$EXPECTED_FRAMEWORK" \
             "$EXPECTED_FLASH_MODE" \
             "$EXPECTED_MEMORY_TYPE" \
-            "$EXPECTED_PSRAM_TYPE"
+            "$EXPECTED_PSRAM_TYPE" \
+            "$EXPECTED_FLASH_SIZE"
           python3 -m pip install --quiet --upgrade pip
           python3 -m pip install --quiet platformio
           pio run -e "$PIO_ENV"

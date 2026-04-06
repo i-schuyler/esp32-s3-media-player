@@ -49,8 +49,9 @@ struct OtaStatus {
   String targetPartition = F("unknown");
   String buildEnv = F("unknown");
   String buildBoard = F("unknown");
+  String buildFlashSize = F("unknown");
   String buildFlashMode = F("unknown");
-  String buildPsramMode = F("unknown");
+  String buildPsramType = F("unknown");
   String buildMemoryType = F("unknown");
   String buildPartitions = F("unknown");
   String partitionLayout = F("unknown");
@@ -203,6 +204,14 @@ String otaBuildBoardName() {
 #endif
 }
 
+String otaBuildFlashSizeName() {
+#ifdef FW_FLASH_SIZE
+  return String(FW_FLASH_SIZE);
+#else
+  return F("unknown");
+#endif
+}
+
 String otaBuildFlashModeName() {
 #ifdef FW_FLASH_MODE
   return String(FW_FLASH_MODE);
@@ -211,8 +220,10 @@ String otaBuildFlashModeName() {
 #endif
 }
 
-String otaBuildPsramModeName() {
-#ifdef FW_PSRAM_MODE
+String otaBuildPsramTypeName() {
+#ifdef FW_PSRAM_TYPE
+  return String(FW_PSRAM_TYPE);
+#elif defined(FW_PSRAM_MODE)
   return String(FW_PSRAM_MODE);
 #else
   return F("unknown");
@@ -284,8 +295,9 @@ String otaPartitionSummary(const esp_partition_t* partition) {
 void refreshOtaDiagnostics() {
   gOtaStatus.buildEnv = otaBuildEnvName();
   gOtaStatus.buildBoard = otaBuildBoardName();
+  gOtaStatus.buildFlashSize = otaBuildFlashSizeName();
   gOtaStatus.buildFlashMode = otaBuildFlashModeName();
-  gOtaStatus.buildPsramMode = otaBuildPsramModeName();
+  gOtaStatus.buildPsramType = otaBuildPsramTypeName();
   gOtaStatus.buildMemoryType = otaBuildMemoryTypeName();
   gOtaStatus.buildPartitions = otaBuildPartitionsName();
   gOtaStatus.partitionLayout = otaPartitionLayoutSummary();
@@ -886,10 +898,12 @@ void handleOtaStatusApi() {
   json += jsonEscape(gOtaStatus.buildEnv);
   json += "\",\"build_board\":\"";
   json += jsonEscape(gOtaStatus.buildBoard);
+  json += "\",\"build_flash_size\":\"";
+  json += jsonEscape(gOtaStatus.buildFlashSize);
   json += "\",\"build_flash_mode\":\"";
   json += jsonEscape(gOtaStatus.buildFlashMode);
-  json += "\",\"build_psram_mode\":\"";
-  json += jsonEscape(gOtaStatus.buildPsramMode);
+  json += "\",\"build_psram_type\":\"";
+  json += jsonEscape(gOtaStatus.buildPsramType);
   json += "\",\"build_memory_type\":\"";
   json += jsonEscape(gOtaStatus.buildMemoryType);
   json += "\",\"build_partitions\":\"";
@@ -948,13 +962,13 @@ void handleOtaPage() {
   body += F("<p id='status'>Status: waiting for upload</p>");
   body += F("<p id='diag'>Diag: env=unknown, running=unknown, target=unknown, error=none(0)</p>");
   body += F("<h2>Build/Config Diagnostics</h2>");
-  body += F("<pre id='cfg'>env=unknown\nboard=unknown\nflash_mode=unknown\npsram_mode=unknown\nmemory_type=unknown\npartitions=unknown\nlayout=unknown\nrunning_partition=unknown\ntarget_partition=unknown\nrunning_image_flash_mode=unknown\nupload_image_flash_mode=unknown</pre>");
+  body += F("<pre id='cfg'>env=unknown\nboard=unknown\nflash_size=unknown\nflash_mode=unknown\npsram_type=unknown\nmemory_type=unknown\npartitions=unknown\nlayout=unknown\nrunning_partition=unknown\ntarget_partition=unknown\nrunning_image_flash_mode=unknown\nupload_image_flash_mode=unknown</pre>");
   body += F("<p id='guidance'>Next step: choose a valid firmware.bin for esp32-s3-devkitc-1-n32r16v.</p>");
   body += F("<p><a href='/debug-log'>Open rolling OTA/SD debug log</a></p>");
   body += F("<p><a href='/'>Back</a></p>");
   body += F("<script>");
   body += F("const f=document.getElementById('otaForm');const p=document.getElementById('uploadProgress');const st=document.getElementById('stage');const s=document.getElementById('status');const g=document.getElementById('guidance');const d=document.getElementById('diag');const cfg=document.getElementById('cfg');");
-  body += F("function setUi(j){st.textContent='Stage: '+j.stage;let msg='Status: '+j.message;if(j.in_progress){msg+=' ('+j.received+' bytes)';}s.textContent=msg;d.textContent='Diag: env='+j.build_env+', running='+j.running_partition+', target='+j.target_partition+', error='+j.error_name+'('+j.error_code+')';const lines=['env='+j.build_env,'board='+j.build_board,'flash_mode='+j.build_flash_mode,'psram_mode='+j.build_psram_mode,'memory_type='+j.build_memory_type,'partitions='+j.build_partitions,'layout='+j.partition_layout,'running_partition='+j.running_partition,'target_partition='+j.target_partition,'running_image_flash_mode='+j.running_image_flash_mode,'upload_image_flash_mode='+j.upload_image_flash_mode];cfg.textContent=lines.join('\\n');g.textContent='Next step: '+j.guidance;}");
+  body += F("function setUi(j){st.textContent='Stage: '+j.stage;let msg='Status: '+j.message;if(j.in_progress){msg+=' ('+j.received+' bytes)';}s.textContent=msg;d.textContent='Diag: env='+j.build_env+', running='+j.running_partition+', target='+j.target_partition+', error='+j.error_name+'('+j.error_code+')';const lines=['env='+j.build_env,'board='+j.build_board,'flash_size='+j.build_flash_size,'flash_mode='+j.build_flash_mode,'psram_type='+j.build_psram_type,'memory_type='+j.build_memory_type,'partitions='+j.build_partitions,'layout='+j.partition_layout,'running_partition='+j.running_partition,'target_partition='+j.target_partition,'running_image_flash_mode='+j.running_image_flash_mode,'upload_image_flash_mode='+j.upload_image_flash_mode];cfg.textContent=lines.join('\\n');g.textContent='Next step: '+j.guidance;}");
   body += F("f.addEventListener('submit',function(e){e.preventDefault();const file=document.getElementById('fw').files[0];if(!file){st.textContent='Stage: failed';s.textContent='Status: select firmware.bin first';g.textContent='Next step: choose firmware.bin then retry.';return;}const data=new FormData();data.append('firmware',file);const x=new XMLHttpRequest();x.open('POST','/ota',true);st.textContent='Stage: upload';s.textContent='Status: starting upload';g.textContent='Next step: keep this page open until a final result is shown.';x.upload.onprogress=function(ev){if(ev.lengthComputable){const pct=Math.round((ev.loaded/ev.total)*100);p.textContent='Upload progress: '+pct+'%';if(pct>=100){st.textContent='Stage: upload_complete';s.textContent='Status: upload complete; waiting for device validation/apply';}}};x.onreadystatechange=function(){if(x.readyState===4&&x.status>=400){s.textContent='Status: '+x.responseText;}};x.onerror=function(){st.textContent='Stage: failed';s.textContent='Status: upload failed (network error)';g.textContent='Next step: keep device powered, reconnect to AP, and retry.';};x.send(data);});");
   body += F("setInterval(function(){fetch('/api/ota/status').then(r=>r.json()).then(setUi).catch(()=>{});},800);");
   body += F("</script></body></html>");
@@ -1396,10 +1410,11 @@ void setup() {
   serialAndDebugLog(F("BOOT: OK"));
   refreshOtaDiagnostics();
   serialAndDebugLogf("OTA: BUILD ENV=%s BOARD=%s", gOtaStatus.buildEnv.c_str(), gOtaStatus.buildBoard.c_str());
-  serialAndDebugLogf("OTA: BUILD CONFIG board=%s flash=%s psram=%s memory=%s partitions=%s",
+  serialAndDebugLogf("OTA: BUILD CONFIG board=%s flash_size=%s flash_mode=%s psram_type=%s memory=%s partitions=%s",
                      gOtaStatus.buildBoard.c_str(),
+                     gOtaStatus.buildFlashSize.c_str(),
                      gOtaStatus.buildFlashMode.c_str(),
-                     gOtaStatus.buildPsramMode.c_str(),
+                     gOtaStatus.buildPsramType.c_str(),
                      gOtaStatus.buildMemoryType.c_str(),
                      gOtaStatus.buildPartitions.c_str());
   serialAndDebugLogf("OTA: RUNNING PARTITION=%s", gOtaStatus.runningPartition.c_str());
