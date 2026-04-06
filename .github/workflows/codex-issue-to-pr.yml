@@ -235,7 +235,68 @@ jobs:
             const likelyRecoveryBranch = matchingIssueRefs[0] || null;
 
             const branchSet = new Set(matchingIssueRefs.map((refEntry) => refEntry.branch));
-            const linkedPrs = Array.from(discoveredPrs.values());
+            let linkedPrs = Array.from(discoveredPrs.values());
+            const defaultBaseBranch = context.payload.repository?.default_branch || 'main';
+
+            if (!linkedPrs.length && likelyRecoveryBranch) {
+              const recoveryPrTitle = `Issue #${issueNumber}: ${context.payload.issue.title || 'codex recovery'}`;
+              const recoveryPrBody = [
+                '## Linked Issue',
+                `- Fixes: ${issueUrl}`,
+                '',
+                '## Scope',
+                '- Auto-opened recovery PR from an existing issue branch when no PR was discoverable.',
+                '- Please update scope/details as needed.',
+                '',
+                '## Versioning',
+                'VERSION_BUMP: none',
+                'RELEASE_VERSION: n/a',
+                '',
+                '## Acceptance checklist',
+                '- [ ] Acceptance items addressed: (reference ACCEPTANCE.md numbers)',
+                '',
+                '## Risk / safety',
+                'RISK: med',
+                'BREAKING: no',
+                'NEEDS_HIL: no',
+                '',
+                '## Evidence',
+                `- CI link: https://github.com/${owner}/${repo}/actions/runs/${process.env.GITHUB_RUN_ID}`,
+                '- Logs/artifacts:',
+                '- Notes: Opened by issue workflow recovery because no PR was discoverable after Codex step.',
+              ].join('\n');
+
+              try {
+                const createdRecoveryPr = await github.rest.pulls.create({
+                  owner,
+                  repo,
+                  title: recoveryPrTitle.slice(0, 240),
+                  head: likelyRecoveryBranch.branch,
+                  base: defaultBaseBranch,
+                  body: recoveryPrBody,
+                  draft: true,
+                });
+                await addPullRequest(createdRecoveryPr.data.number, `auto-recovery:${likelyRecoveryBranch.branch}`);
+              } catch (error) {
+                if (error.status === 422) {
+                  core.info(`Auto-recovery PR creation reported 422 for ${likelyRecoveryBranch.branch}; re-checking existing PRs.`);
+                  const prsForLikelyBranch = await github.rest.pulls.list({
+                    owner,
+                    repo,
+                    state: 'all',
+                    head: `${owner}:${likelyRecoveryBranch.branch}`,
+                    per_page: 20,
+                  });
+                  for (const pr of prsForLikelyBranch.data) {
+                    await addPullRequest(pr.number, `head-recheck:${likelyRecoveryBranch.branch}`);
+                  }
+                } else {
+                  core.warning(`Auto-recovery PR creation failed for ${likelyRecoveryBranch.branch}: ${error.message || error}`);
+                }
+              }
+
+              linkedPrs = Array.from(discoveredPrs.values());
+            }
 
             if (!linkedPrs.length) {
               const branchLines = matchingIssueRefs.length
@@ -262,9 +323,9 @@ jobs:
                 likelyRecoveryLine,
                 '',
                 'Manual recovery:',
-                '1. If a branch exists above, open a PR from that branch into `main`.',
+                `1. If a branch exists above, open a PR from that branch into \`${defaultBaseBranch}\`.`,
                 `2. Ensure the PR body includes this issue URL: ${issueUrl}`,
-                '3. Comment `/retry` on this issue after creating/updating the PR.',
+                '3. Manual PR creation is a valid recovery path; `/retry` is optional and only needed to rerun Codex automation.',
                 '',
                 `Workflow run: https://github.com/${owner}/${repo}/actions/runs/${process.env.GITHUB_RUN_ID}`,
               ].join('\n');
