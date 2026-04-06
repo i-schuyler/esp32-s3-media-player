@@ -12,6 +12,26 @@
 - PR: <url>
 - Issue: <url>
 
+## [v0.1.8] - 2026-04-06
+
+### Added
+
+* Issue #33 implementation plan mapping release-prep scope to `ACCEPTANCE.md` and `docs/SMOKE_TEST_SPEC.md`.
+
+### Changed
+
+* Release-prep changelog now includes a newest-first entry for the next automated tag/release cycle.
+* Version source-of-truth remains `CHANGELOG.md` with `vX.Y.Z` formatting aligned to release automation parsing.
+
+### Fixed
+
+* ESP32-S3 N32R16V memory/build parity release notes are now represented at the top of the changelog for current-main release prep, including explicit flash/memory/PSRAM/partition parity diagnostics in release checks.
+
+### Notes
+
+* PR:
+* Issue: https://github.com/i-schuyler/esp32-s3-media-player/issues/33
+
 ## [v0.1.7] - 2026-03-24
 
 ### Added
