@@ -23,7 +23,9 @@
 ## Firmware/docs pin alignment (docs-first)
 - Wiring docs and firmware constants must never drift.
 - Source of truth in firmware:
-  - `src/main.cpp`: `kSdCsPin=13`, `kSdSckPin=12`, `kSdMisoPin=11`, `kSdMosiPin=10`
+  - `src/main.cpp` SD pin profiles:
+    - `default-io13-12-11-10`: `CS=13`, `SCK=12`, `MISO=11`, `MOSI=10`
+    - `alt-io4-5-6-7`: `CS=4`, `SCK=5`, `MISO=6`, `MOSI=7`
   - `src/main.cpp` AP password: `kDefaultApPassword="12345678"`
 - Published docs that must match:
   - `README.md` wiring section
