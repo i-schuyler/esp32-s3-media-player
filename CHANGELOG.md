@@ -12,6 +12,29 @@
 - PR: <url>
 - Issue: <url>
 
+## [v0.1.17] - 2026-04-07
+
+### Added
+
+* Issue #55 implementation plan mapping alternate SD pin-profile experiment scope to `ACCEPTANCE.md` and `docs/SMOKE_TEST_SPEC.md`.
+* Firmware now supports two SD pin profiles for bring-up attempts: `default-io13-12-11-10` and `alt-io4-5-6-7`.
+* Browser-visible SD diagnostics now expose active `pin_profile` plus `attempted_pin_profiles` alongside actual pin map details.
+
+### Changed
+
+* SD bring-up attempt order is now default pin profile first, then alternate pin profile, while preserving existing SPI host/speed retry diagnostics flow inside each profile.
+* SD init trace and rolling debug log now include pin-profile context so CMD0 timeout behavior can be compared across profile mappings.
+* Wiring/pin alignment policy and README wiring docs now include both default and alternate SD pin profiles.
+
+### Fixed
+
+* Reduced ambiguity in persistent all-`0xFF` CMD0 timeout triage by making profile-level pin mapping experiments visible in existing browser diagnostics/log flow without touching OTA or streaming behavior.
+
+### Notes
+
+* PR:
+* Issue: https://github.com/i-schuyler/esp32-s3-media-player/issues/55
+
 ## [v0.1.16] - 2026-04-07
 
 ### Added

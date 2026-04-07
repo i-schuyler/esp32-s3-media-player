@@ -32,12 +32,19 @@ pio device monitor -b 115200
 - RTC **SCL** → Row 8 Right (**IO9**)
 - RTC **SDA** → Row 11 Right (**IO8**)
 ### MicroSD (SPI)
+Default SD pin profile (`default-io13-12-11-10`):
 - SD **GND** → Row 1 Right (GND)
 - SD **VCC** → Row 21 Right (3V3)
 - SD **CS** → Row 4 Right (**IO13**)
 - SD **SCK** → Row 5 Right (**IO12**)
 - SD **MISO** → Row 6 Right (**IO11**)
 - SD **MOSI** → Row 7 Right (**IO10**)
+
+Alternate SD pin profile (`alt-io4-5-6-7`) for bring-up experiments:
+- SD **CS** → **IO4**
+- SD **SCK** → **IO5**
+- SD **MISO** → **IO6**
+- SD **MOSI** → **IO7**
 
 ## OTA Web Update
 - Open `http://192.168.4.1/ota`.
