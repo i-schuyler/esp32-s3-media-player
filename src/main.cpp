@@ -35,6 +35,7 @@ constexpr uint8_t kSdSpiMode = SPI_MODE0;
 constexpr uint8_t kSdInitClockBytes = 10;
 constexpr uint8_t kSdCmdResponsePolls = 16;
 constexpr uint8_t kSdAttemptsPerSpeed = 2;
+constexpr uint16_t kSdSoftSpiHalfPeriodUs = 4;
 constexpr uint16_t kSdPowerStage1Ms = 5;
 constexpr uint16_t kSdPowerStage2Ms = 25;
 constexpr uint16_t kSdPowerStage3Ms = 5;
@@ -126,6 +127,7 @@ size_t gDebugLogCount = 0;
 String gSdPinMap;
 String gSdAttemptedSpeeds;
 String gSdAttemptedHosts;
+String gSdAttemptedBuses;
 String gSdInitTrace;
 String gSdSpiHost;
 String gSdSpiModeName;
@@ -535,9 +537,10 @@ void resetSdInitTrace(bool allowFormat) {
   gSdSpiModeName = sdSpiModeLabel(kSdSpiMode);
   gSdAttemptedSpeeds = "";
   gSdAttemptedHosts = "";
+  gSdAttemptedBuses = "";
   gSdInitTrace = "";
   appendSdInitTraceLine(String(F("start allow_format=")) + (allowFormat ? F("true") : F("false")));
-  appendSdInitTraceLine(F("flow sd_host_fallback_then_sd_begin_cmd0_diag_on_failure"));
+  appendSdInitTraceLine(F("flow hardware_spi_host_fallback_then_software_spi_cmd0_diag"));
   appendSdInitTraceLine(String(F("pin_map ")) + gSdPinMap);
   String hostPlan = String(F("host_plan primary=")) + sdSpiHostLabel(kSdPrimarySpiHost);
   if (hasAlternateSdSpiHost()) {
@@ -561,6 +564,11 @@ void recordSdAttemptedSpeed(uint32_t hz) {
 void recordSdAttemptedHost(const String& hostLabel) {
   if (gSdAttemptedHosts.length() > 0) gSdAttemptedHosts += F(", ");
   gSdAttemptedHosts += hostLabel;
+}
+
+void recordSdAttemptedBus(const String& busLabel) {
+  if (gSdAttemptedBuses.length() > 0) gSdAttemptedBuses += F(", ");
+  gSdAttemptedBuses += busLabel;
 }
 
 void appendSdTraceToDebugLog() {
@@ -619,6 +627,64 @@ SdCmd0Probe sdProbeCmd0(uint32_t hz) {
   return probe;
 }
 
+uint8_t sdSoftSpiTransfer(uint8_t tx) {
+  uint8_t rx = 0;
+  for (uint8_t bit = 0; bit < 8; ++bit) {
+    digitalWrite(kSdSckPin, LOW);
+    digitalWrite(kSdMosiPin, (tx & 0x80) ? HIGH : LOW);
+    delayMicroseconds(kSdSoftSpiHalfPeriodUs);
+    digitalWrite(kSdSckPin, HIGH);
+    rx <<= 1;
+    if (digitalRead(kSdMisoPin) == HIGH) rx |= 0x01;
+    delayMicroseconds(kSdSoftSpiHalfPeriodUs);
+    tx <<= 1;
+  }
+  return rx;
+}
+
+SdCmd0Probe sdProbeCmd0SoftwareSpi() {
+  SdCmd0Probe probe;
+  probe.hz = 1000000UL / (kSdSoftSpiHalfPeriodUs * 2UL * 8UL);
+  pinMode(kSdCsPin, OUTPUT);
+  pinMode(kSdSckPin, OUTPUT);
+  pinMode(kSdMosiPin, OUTPUT);
+  pinMode(kSdMisoPin, INPUT_PULLUP);
+  digitalWrite(kSdCsPin, HIGH);
+  digitalWrite(kSdSckPin, HIGH);
+  digitalWrite(kSdMosiPin, HIGH);
+  delayMicroseconds(kSdSoftSpiHalfPeriodUs);
+
+  probe.csIdleHigh = (digitalRead(kSdCsPin) == HIGH);
+  for (uint8_t i = 0; i < kSdInitClockBytes; ++i) {
+    sdSoftSpiTransfer(0xFF);
+  }
+  probe.dummyClocksIssued = true;
+
+  digitalWrite(kSdCsPin, LOW);
+  probe.csAssertedLow = (digitalRead(kSdCsPin) == LOW);
+  sdSoftSpiTransfer(0xFF);
+  sdSoftSpiTransfer(0x40);
+  sdSoftSpiTransfer(0x00);
+  sdSoftSpiTransfer(0x00);
+  sdSoftSpiTransfer(0x00);
+  sdSoftSpiTransfer(0x00);
+  sdSoftSpiTransfer(0x95);
+
+  uint8_t r1 = 0xFF;
+  for (uint8_t i = 0; i < kSdCmdResponsePolls; ++i) {
+    r1 = sdSoftSpiTransfer(0xFF);
+    probe.pollBytes[i] = r1;
+    ++probe.polls;
+    if ((r1 & 0x80) == 0) break;
+  }
+
+  digitalWrite(kSdCsPin, HIGH);
+  probe.csReleasedHigh = (digitalRead(kSdCsPin) == HIGH);
+  sdSoftSpiTransfer(0xFF);
+  probe.r1 = r1;
+  return probe;
+}
+
 void primeSdSpiBus() {
   pinMode(kSdCsPin, OUTPUT);
   pinMode(kSdSckPin, OUTPUT);
@@ -659,6 +725,7 @@ void runSdPowerUpSettleSequence(uint8_t attemptNumber, uint32_t hz) {
 bool mountSdAttempt(uint32_t hz, bool allowFormat, uint8_t attemptNumber, String& detail, SdFailureStage& stage, bool& capacityKnown) {
   const String misoHint = sdMisoIdleHint();
   String prefix = String(F("attempt#")) + String(static_cast<unsigned long>(attemptNumber)) +
+                  F(" bus=hardware-spi") +
                   F(" host=") + gSdSpiHost +
                   F(" speed=") + sdSpiSpeedLabel(hz) +
                   F(" ") + misoHint;
@@ -762,6 +829,7 @@ bool mountSdWithRetries(bool allowFormat, String& detail, SdFailureStage& stage,
     for (const uint32_t hz : kSdSpiRetryHz) {
       for (uint8_t attempt = 0; attempt < kSdAttemptsPerSpeed; ++attempt) {
         ++attemptNumber;
+        recordSdAttemptedBus(F("hardware-spi"));
         recordSdAttemptedSpeed(hz);
         SD.end();
         gSdSpi->end();
@@ -774,6 +842,36 @@ bool mountSdWithRetries(bool allowFormat, String& detail, SdFailureStage& stage,
         delay(12);
       }
     }
+  }
+  SD.end();
+  gSdSpi->end();
+  ++attemptNumber;
+  recordSdAttemptedBus(F("software-spi"));
+  const String softMisoHint = sdMisoIdleHint();
+  const SdCmd0Probe softProbe = sdProbeCmd0SoftwareSpi();
+  const bool softCmd0AnyResponse = (softProbe.r1 != 0xFF) && ((softProbe.r1 & 0x80) == 0);
+  appendSdInitTraceLine(String(F("attempt#")) + String(static_cast<unsigned long>(attemptNumber)) +
+                        F(" bus=software-spi host=bitbang speed=") + sdSpiSpeedLabel(softProbe.hz) +
+                        F(" ") + softMisoHint +
+                        F(" cmd0_hz=") + sdSpiSpeedLabel(softProbe.hz) +
+                        F(" cmd0=") + sdCmd0OutcomeLabel(softProbe) +
+                        F(" cmd0_r1=") + sdHexByte(softProbe.r1) +
+                        F(" cmd0_polls=") + String(static_cast<unsigned long>(softProbe.polls)) +
+                        F(" cmd0_first_bytes=") + sdPollBytesSummary(softProbe) +
+                        F(" dummy_clocks=") + (softProbe.dummyClocksIssued ? F("yes") : F("no")) +
+                        F(" cs_idle_high=") + (softProbe.csIdleHigh ? F("yes") : F("no")) +
+                        F(" cs_assert_low=") + (softProbe.csAssertedLow ? F("yes") : F("no")) +
+                        F(" cs_release_high=") + (softProbe.csReleasedHigh ? F("yes") : F("no")) +
+                        F(" stage=software_spi_diag_only"));
+  if (softCmd0AnyResponse) {
+    detail += String(F(" | software-spi cmd0_response=")) + sdHexByte(softProbe.r1) +
+              F(" first_bytes=") + sdPollBytesSummary(softProbe);
+    if (stage == SdFailureStage::kCardCommFailure) {
+      stage = SdFailureStage::kInitBusFailure;
+    }
+  } else {
+    detail += String(F(" | software-spi cmd0_timeout r1=")) + sdHexByte(softProbe.r1) +
+              F(" first_bytes=") + sdPollBytesSummary(softProbe);
   }
   return false;
 }
@@ -992,6 +1090,8 @@ void handleSdStatusApi() {
   json += jsonEscape(gSdSpiHost);
   json += "\",\"attempted_spi_hosts\":\"";
   json += jsonEscape(gSdAttemptedHosts);
+  json += "\",\"attempted_spi_buses\":\"";
+  json += jsonEscape(gSdAttemptedBuses);
   json += "\",\"spi_mode\":\"";
   json += jsonEscape(gSdSpiModeName);
   json += "\",\"attempted_spi_speeds\":\"";
@@ -1029,6 +1129,9 @@ void handleSdDiagnosticsPage() {
   body += F("</p>");
   body += F("<p><strong>Attempted SPI hosts:</strong> ");
   body += gSdAttemptedHosts.length() > 0 ? htmlEscape(gSdAttemptedHosts) : F("(none)");
+  body += F("</p>");
+  body += F("<p><strong>Attempted SD bus paths:</strong> ");
+  body += gSdAttemptedBuses.length() > 0 ? htmlEscape(gSdAttemptedBuses) : F("(none)");
   body += F("</p>");
   body += F("<p><strong>Attempted SPI init speeds:</strong> ");
   body += gSdAttemptedSpeeds.length() > 0 ? htmlEscape(gSdAttemptedSpeeds) : F("(none)");
@@ -1709,6 +1812,7 @@ bool mountSd() {
     serialAndDebugLog(F("SD: MOUNT FAILED"));
     serialAndDebugLogf("SD: PIN MAP %s", gSdPinMap.c_str());
     serialAndDebugLogf("SD: SPI HOST=%s MODE=%s", gSdSpiHost.c_str(), gSdSpiModeName.c_str());
+    serialAndDebugLogf("SD: ATTEMPTED BUSES %s", gSdAttemptedBuses.length() > 0 ? gSdAttemptedBuses.c_str() : "none");
     serialAndDebugLogf("SD: ATTEMPTED HOSTS %s", gSdAttemptedHosts.length() > 0 ? gSdAttemptedHosts.c_str() : "none");
     serialAndDebugLogf("SD: ATTEMPTED SPI %s", gSdAttemptedSpeeds.length() > 0 ? gSdAttemptedSpeeds.c_str() : "none");
     appendSdTraceToDebugLog();
@@ -1720,6 +1824,7 @@ bool mountSd() {
   serialAndDebugLog(F("SD: MOUNTED"));
   serialAndDebugLogf("SD: PIN MAP %s", gSdPinMap.c_str());
   serialAndDebugLogf("SD: SPI HOST=%s MODE=%s", gSdSpiHost.c_str(), gSdSpiModeName.c_str());
+  serialAndDebugLogf("SD: ATTEMPTED BUSES %s", gSdAttemptedBuses.c_str());
   serialAndDebugLogf("SD: ATTEMPTED HOSTS %s", gSdAttemptedHosts.c_str());
   serialAndDebugLogf("SD: ATTEMPTED SPI %s", gSdAttemptedSpeeds.c_str());
   appendSdTraceToDebugLog();
