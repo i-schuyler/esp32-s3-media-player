@@ -12,6 +12,28 @@
 - PR: <url>
 - Issue: <url>
 
+## [v0.1.18] - 2026-04-07
+
+### Added
+
+* Issue #57 implementation plan mapping SD profile-selection/reset scope to `ACCEPTANCE.md` and `docs/SMOKE_TEST_SPEC.md`.
+* Home page now includes explicit SD pin-profile selection controls and a software reset button.
+* New SD profile APIs: `GET /api/sd/profile` and `POST /api/sd/profile` for browser-visible profile selection and rerun.
+
+### Changed
+
+* SD bring-up/diagnostics now run only against the explicitly selected SD pin profile per test flow, avoiding cross-profile fallback noise in traces.
+* SD status/diagnostics outputs now include selected profile context alongside active profile and pin-map details.
+
+### Fixed
+
+* Reduced ambiguity in SD diagnostics by eliminating automatic multi-profile mixing within a single mount attempt flow.
+
+### Notes
+
+* PR:
+* Issue: https://github.com/i-schuyler/esp32-s3-media-player/issues/57
+
 ## [v0.1.17] - 2026-04-07
 
 ### Added

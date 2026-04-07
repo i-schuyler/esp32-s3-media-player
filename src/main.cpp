@@ -104,6 +104,8 @@ OtaStatus gOtaStatus;
 OtaSession gOtaSession;
 bool gOtaRestartPending = false;
 unsigned long gOtaRestartAtMs = 0;
+bool gManualRestartPending = false;
+unsigned long gManualRestartAtMs = 0;
 
 enum class SdFailureStage {
   kOk,
@@ -144,6 +146,7 @@ String gSdInitTrace;
 String gSdSpiHost;
 String gSdSpiModeName;
 size_t gSdActivePinProfileIndex = kSdDefaultPinProfileIndex;
+size_t gSdSelectedPinProfileIndex = kSdDefaultPinProfileIndex;
 
 struct SdCmd0Probe {
   bool dummyClocksIssued = false;
@@ -155,6 +158,8 @@ struct SdCmd0Probe {
   uint8_t pollBytes[kSdCmdResponsePolls] = {0};
   uint32_t hz = kSdInitHz;
 };
+
+bool mountSd();
 
 String htmlEscape(const String& in) {
   String out;
@@ -559,7 +564,10 @@ void appendSdInitTraceLine(const String& line) {
 }
 
 void resetSdInitTrace(bool allowFormat) {
-  selectSdPinProfile(kSdDefaultPinProfileIndex);
+  if (gSdSelectedPinProfileIndex >= kSdPinProfileCount) {
+    gSdSelectedPinProfileIndex = kSdDefaultPinProfileIndex;
+  }
+  selectSdPinProfile(gSdSelectedPinProfileIndex);
   gSdSpiHost = sdSpiHostLabel(kSdPrimarySpiHost);
   gSdSpiModeName = sdSpiModeLabel(kSdSpiMode);
   gSdAttemptedPinProfiles = "";
@@ -568,10 +576,8 @@ void resetSdInitTrace(bool allowFormat) {
   gSdAttemptedBuses = "";
   gSdInitTrace = "";
   appendSdInitTraceLine(String(F("start allow_format=")) + (allowFormat ? F("true") : F("false")));
-  appendSdInitTraceLine(F("flow pin_profile_fallback_then_hardware_spi_host_fallback_then_software_spi_cmd0_diag"));
-  const String fallbackProfile = (kSdPinProfileCount > 1) ? sdPinProfileLabel(1) : String(F("none"));
-  appendSdInitTraceLine(String(F("pin_profile_plan primary=")) + sdPinProfileLabel(kSdDefaultPinProfileIndex) +
-                        F(" fallback=") + fallbackProfile);
+  appendSdInitTraceLine(F("flow selected_pin_profile_only_then_hardware_spi_host_fallback_then_software_spi_cmd0_diag"));
+  appendSdInitTraceLine(String(F("pin_profile_selected=")) + gSdPinProfileName);
   appendSdInitTraceLine(String(F("pin_profile_active=")) + gSdPinProfileName);
   appendSdInitTraceLine(String(F("pin_map ")) + gSdPinMap);
   String hostPlan = String(F("host_plan primary=")) + sdSpiHostLabel(kSdPrimarySpiHost);
@@ -861,35 +867,36 @@ bool mountSdWithRetries(bool allowFormat, String& detail, SdFailureStage& stage,
   uint8_t attemptNumber = 0;
   const uint8_t hostCount = hasAlternateSdSpiHost() ? 2 : 1;
 
-  for (size_t pinProfileIndex = 0; pinProfileIndex < kSdPinProfileCount; ++pinProfileIndex) {
-    selectSdPinProfile(pinProfileIndex);
-    recordSdAttemptedPinProfile(gSdPinProfileName);
-    appendSdInitTraceLine(String(F("pin_profile_select=")) + gSdPinProfileName + F(" pin_map ") + gSdPinMap);
+  if (gSdSelectedPinProfileIndex >= kSdPinProfileCount) {
+    gSdSelectedPinProfileIndex = kSdDefaultPinProfileIndex;
+  }
+  selectSdPinProfile(gSdSelectedPinProfileIndex);
+  recordSdAttemptedPinProfile(gSdPinProfileName);
+  appendSdInitTraceLine(String(F("pin_profile_select=")) + gSdPinProfileName + F(" pin_map ") + gSdPinMap);
 
-    for (uint8_t hostIndex = 0; hostIndex < hostCount; ++hostIndex) {
-      if (hostIndex == 0) {
-        selectSdSpiHost(gSdSpiPrimary, kSdPrimarySpiHost);
-      } else {
-        selectSdSpiHost(gSdSpiAlternate, kSdAlternateSpiHost);
-      }
-      recordSdAttemptedHost(gSdSpiHost);
-      appendSdInitTraceLine(String(F("host_select=")) + gSdSpiHost);
+  for (uint8_t hostIndex = 0; hostIndex < hostCount; ++hostIndex) {
+    if (hostIndex == 0) {
+      selectSdSpiHost(gSdSpiPrimary, kSdPrimarySpiHost);
+    } else {
+      selectSdSpiHost(gSdSpiAlternate, kSdAlternateSpiHost);
+    }
+    recordSdAttemptedHost(gSdSpiHost);
+    appendSdInitTraceLine(String(F("host_select=")) + gSdSpiHost);
 
-      for (const uint32_t hz : kSdSpiRetryHz) {
-        for (uint8_t attempt = 0; attempt < kSdAttemptsPerSpeed; ++attempt) {
-          ++attemptNumber;
-          recordSdAttemptedBus(F("hardware-spi"));
-          recordSdAttemptedSpeed(hz);
-          SD.end();
-          gSdSpi->end();
-          primeSdSpiBus();
-          runSdPowerUpSettleSequence(attemptNumber, hz);
-          if (mountSdAttempt(hz, allowFormat, attemptNumber, detail, stage, capacityKnown)) {
-            usedHz = hz;
-            return true;
-          }
-          delay(12);
+    for (const uint32_t hz : kSdSpiRetryHz) {
+      for (uint8_t attempt = 0; attempt < kSdAttemptsPerSpeed; ++attempt) {
+        ++attemptNumber;
+        recordSdAttemptedBus(F("hardware-spi"));
+        recordSdAttemptedSpeed(hz);
+        SD.end();
+        gSdSpi->end();
+        primeSdSpiBus();
+        runSdPowerUpSettleSequence(attemptNumber, hz);
+        if (mountSdAttempt(hz, allowFormat, attemptNumber, detail, stage, capacityKnown)) {
+          usedHz = hz;
+          return true;
         }
+        delay(12);
       }
     }
   }
@@ -1045,7 +1052,7 @@ void appendSdUnavailableHtml(String& body) {
 
 void handleRoot() {
   String body;
-  body.reserve(512);
+  body.reserve(3000);
   body += F("<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>");
   body += F("<title>ESP32-S3 Media Server</title></head><body>");
   body += F("<h1>ESP32-S3 Media Server</h1>");
@@ -1056,6 +1063,27 @@ void handleRoot() {
   body += F("<p><a href='/debug-log'>Debug log (OTA/SD)</a></p>");
   body += F("<p><a href='/sd-diagnostics'>SD diagnostics</a></p>");
   body += F("<p><a href='/ota'>Firmware update (OTA)</a></p>");
+  body += F("<hr><h2>SD Pin Profile</h2>");
+  body += F("<p>Current selected profile: <strong><span id='sdSel'>loading...</span></strong></p>");
+  body += F("<p>Active diagnostics profile: <strong><span id='sdActive'>loading...</span></strong></p>");
+  body += F("<p>Active pin map: <code id='sdMap'>loading...</code></p>");
+  body += F("<form id='sdProfileForm'>");
+  body += F("<label for='sdProfile'>Choose wired SD profile:</label> ");
+  body += F("<select id='sdProfile' name='index'></select> ");
+  body += F("<button type='submit'>Apply and rerun SD diagnostics</button>");
+  body += F("</form>");
+  body += F("<p id='sdProfileStatus'>Loading SD profile status...</p>");
+  body += F("<hr><h2>Software Reset</h2>");
+  body += F("<form id='resetForm'><button type='submit'>Restart Device</button></form>");
+  body += F("<p id='resetStatus'>No reset requested.</p>");
+  body += F("<script>");
+  body += F("const sdSel=document.getElementById('sdSel');const sdActive=document.getElementById('sdActive');const sdMap=document.getElementById('sdMap');const sdProfile=document.getElementById('sdProfile');const sdProfileStatus=document.getElementById('sdProfileStatus');");
+  body += F("function setProfiles(j){const list=Array.isArray(j.profiles)?j.profiles:[];if(sdProfile.options.length!==list.length){sdProfile.innerHTML='';for(const p of list){const o=document.createElement('option');o.value=String(p.index);o.textContent=p.name+' ('+p.pin_map+')';sdProfile.appendChild(o);}}sdProfile.value=String(j.selected_pin_profile_index);sdSel.textContent=j.selected_pin_profile||'unknown';sdActive.textContent=j.active_pin_profile||'unknown';sdMap.textContent=j.pin_map||'unknown';sdProfileStatus.textContent='SD status: '+(j.sd_title||'unknown')+' ('+(j.sd_stage||'unknown')+')';}");
+  body += F("function loadProfiles(){fetch('/api/sd/profile',{cache:'no-store'}).then(r=>r.json()).then(setProfiles).catch(()=>{sdProfileStatus.textContent='SD profile status unavailable';});}");
+  body += F("document.getElementById('sdProfileForm').addEventListener('submit',async function(e){e.preventDefault();const idx=encodeURIComponent(sdProfile.value);sdProfileStatus.textContent='Applying selected profile and rerunning diagnostics...';const r=await fetch('/api/sd/profile',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'index='+idx});let j={};try{j=await r.json();}catch(_e){}if(!r.ok){sdProfileStatus.textContent='Failed to apply profile';return;}setProfiles(j);});");
+  body += F("const resetStatus=document.getElementById('resetStatus');document.getElementById('resetForm').addEventListener('submit',async function(e){e.preventDefault();if(!confirm('Restart device now?'))return;resetStatus.textContent='Scheduling restart...';const r=await fetch('/api/system/reset',{method:'POST'});if(r.ok){resetStatus.textContent='Restart scheduled. Reconnect to ESP32-MEDIA after reboot.';}else{resetStatus.textContent='Reset request failed.';}});");
+  body += F("loadProfiles();setInterval(loadProfiles,2000);");
+  body += F("</script>");
   body += F("</body></html>");
   server.send(200, F("text/html"), body);
 }
@@ -1139,6 +1167,10 @@ void handleSdStatusApi() {
   json += jsonEscape(gSdPinMap);
   json += "\",\"pin_profile\":\"";
   json += jsonEscape(gSdPinProfileName);
+  json += "\",\"selected_pin_profile\":\"";
+  json += jsonEscape(sdPinProfileLabel(gSdSelectedPinProfileIndex));
+  json += "\",\"selected_pin_profile_index\":";
+  json += String(static_cast<unsigned long>(gSdSelectedPinProfileIndex));
   json += "\",\"attempted_pin_profiles\":\"";
   json += jsonEscape(gSdAttemptedPinProfiles);
   json += "\",\"spi_host\":\"";
@@ -1155,6 +1187,73 @@ void handleSdStatusApi() {
   json += jsonEscape(gSdInitTrace);
   json += "\"}";
   server.send(200, F("application/json"), json);
+}
+
+String sdProfileSelectionJson() {
+  if (gSdSelectedPinProfileIndex >= kSdPinProfileCount) {
+    gSdSelectedPinProfileIndex = kSdDefaultPinProfileIndex;
+  }
+  String json = "{";
+  json += "\"selected_pin_profile\":\"";
+  json += jsonEscape(sdPinProfileLabel(gSdSelectedPinProfileIndex));
+  json += "\",\"selected_pin_profile_index\":";
+  json += String(static_cast<unsigned long>(gSdSelectedPinProfileIndex));
+  json += ",\"active_pin_profile\":\"";
+  json += jsonEscape(gSdPinProfileName);
+  json += "\",\"pin_map\":\"";
+  json += jsonEscape(gSdPinMap);
+  json += "\",\"sd_available\":";
+  json += gSdStatus.available ? "true" : "false";
+  json += ",\"sd_stage\":\"";
+  json += jsonEscape(sdStageCode(gSdStatus.stage));
+  json += "\",\"sd_title\":\"";
+  json += jsonEscape(sdStageTitle(gSdStatus.stage));
+  json += "\",\"profiles\":[";
+  for (size_t i = 0; i < kSdPinProfileCount; ++i) {
+    if (i > 0) json += ",";
+    selectSdPinProfile(i);
+    json += "{\"index\":";
+    json += String(static_cast<unsigned long>(i));
+    json += ",\"name\":\"";
+    json += jsonEscape(sdPinProfileLabel(i));
+    json += "\",\"pin_map\":\"";
+    json += jsonEscape(gSdPinMap);
+    json += "\"}";
+  }
+  selectSdPinProfile(gSdSelectedPinProfileIndex);
+  json += "]}";
+  return json;
+}
+
+void handleSdProfileApi() {
+  server.send(200, F("application/json"), sdProfileSelectionJson());
+}
+
+void handleSdProfilePost() {
+  const String idxRaw = server.arg("index");
+  if (idxRaw.length() == 0) {
+    server.send(400, F("application/json"), "{\"error\":\"index_required\"}");
+    return;
+  }
+
+  const long requestedIndex = idxRaw.toInt();
+  if (requestedIndex < 0 || static_cast<size_t>(requestedIndex) >= kSdPinProfileCount) {
+    server.send(400, F("application/json"), "{\"error\":\"invalid_index\"}");
+    return;
+  }
+
+  gSdSelectedPinProfileIndex = static_cast<size_t>(requestedIndex);
+  selectSdPinProfile(gSdSelectedPinProfileIndex);
+  serialAndDebugLogf("SD: PROFILE SELECTED %s", gSdPinProfileName.c_str());
+  mountSd();
+  server.send(200, F("application/json"), sdProfileSelectionJson());
+}
+
+void handleSystemResetPost() {
+  gManualRestartPending = true;
+  gManualRestartAtMs = millis() + 500;
+  serialAndDebugLog(F("SYS: MANUAL RESET REQUESTED"));
+  server.send(200, F("application/json"), "{\"ok\":true,\"message\":\"restart scheduled\"}");
 }
 
 void handleSdDiagnosticsPage() {
@@ -1174,6 +1273,9 @@ void handleSdDiagnosticsPage() {
     body += htmlEscape(gSdStatus.detail);
     body += F("</p>");
   }
+  body += F("<p><strong>Selected pin profile:</strong> ");
+  body += htmlEscape(sdPinProfileLabel(gSdSelectedPinProfileIndex));
+  body += F("</p>");
   body += F("<p><strong>Pin profile in use:</strong> ");
   body += htmlEscape(gSdPinProfileName);
   body += F("</p>");
@@ -1848,8 +1950,11 @@ void configureRoutes() {
   server.on("/files", HTTP_GET, handleFilesPage);
   server.on("/api/list", HTTP_GET, handleListApi);
   server.on("/api/sd/status", HTTP_GET, handleSdStatusApi);
+  server.on("/api/sd/profile", HTTP_GET, handleSdProfileApi);
+  server.on("/api/sd/profile", HTTP_POST, handleSdProfilePost);
   server.on("/api/sd/format/status", HTTP_GET, handleSdFormatStatusApi);
   server.on("/api/sd/format", HTTP_POST, handleSdFormatPost);
+  server.on("/api/system/reset", HTTP_POST, handleSystemResetPost);
   server.on("/api/ota/status", HTTP_GET, handleOtaStatusApi);
   server.on("/api/debug-log", HTTP_GET, handleDebugLogApi);
   server.on("/debug-log", HTTP_GET, handleDebugLogPage);
@@ -1933,6 +2038,8 @@ void setup() {
   serialAndDebugLogf("OTA: RUNNING PARTITION=%s", gOtaStatus.runningPartition.c_str());
   serialAndDebugLogf("OTA: TARGET PARTITION=%s", gOtaStatus.targetPartition.c_str());
   serialAndDebugLogf("OTA: PARTITION LAYOUT=%s", gOtaStatus.partitionLayout.c_str());
+  gSdSelectedPinProfileIndex = kSdDefaultPinProfileIndex;
+  selectSdPinProfile(gSdSelectedPinProfileIndex);
 
   if (mountSd()) {
     // Boot smoke regex expects RTC line; we only emit a placeholder in v0.1 firmware.
@@ -1944,6 +2051,9 @@ void setup() {
 }
 
 void loop() {
+  if (gManualRestartPending && static_cast<long>(millis() - gManualRestartAtMs) >= 0) {
+    ESP.restart();
+  }
   if (gOtaRestartPending && static_cast<long>(millis() - gOtaRestartAtMs) >= 0) {
     ESP.restart();
   }
