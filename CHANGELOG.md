@@ -12,6 +12,27 @@
 - PR: <url>
 - Issue: <url>
 
+## [v0.1.15] - 2026-04-06
+
+### Added
+
+* Issue #51 implementation plan mapping SD SPI host-fallback scope to `ACCEPTANCE.md` and `docs/SMOKE_TEST_SPEC.md`.
+* Browser-visible SD diagnostics now expose attempted SPI host list (in addition to active host) for FSPI vs alternate-host comparison.
+
+### Changed
+
+* SD bring-up now attempts a bounded SPI host fallback sequence: primary host first, then alternate host if all retries on the primary host fail.
+* SD init trace and rolling debug log now include per-attempt host labels so each bring-up attempt clearly indicates which SPI host was used.
+
+### Fixed
+
+* Reduced ambiguity in persistent CMD0 timeout triage by making host-selection behavior visible and testable without changing SD pin mapping or unrelated OTA/streaming paths.
+
+### Notes
+
+* PR:
+* Issue: https://github.com/i-schuyler/esp32-s3-media-player/issues/51
+
 ## [v0.1.14] - 2026-04-06
 
 ### Added

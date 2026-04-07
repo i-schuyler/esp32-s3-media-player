@@ -13,7 +13,17 @@
 
 namespace {
 WebServer server(80);
-SPIClass gSdSpi(FSPI);
+constexpr uint8_t kSdPrimarySpiHost = FSPI;
+#if defined(HSPI)
+constexpr uint8_t kSdAlternateSpiHost = HSPI;
+#elif defined(VSPI)
+constexpr uint8_t kSdAlternateSpiHost = VSPI;
+#else
+constexpr uint8_t kSdAlternateSpiHost = kSdPrimarySpiHost;
+#endif
+SPIClass gSdSpiPrimary(kSdPrimarySpiHost);
+SPIClass gSdSpiAlternate(kSdAlternateSpiHost);
+SPIClass* gSdSpi = &gSdSpiPrimary;
 
 constexpr uint8_t kSdCsPin = 13;
 constexpr uint8_t kSdSckPin = 12;
@@ -115,6 +125,7 @@ size_t gDebugLogNext = 0;
 size_t gDebugLogCount = 0;
 String gSdPinMap;
 String gSdAttemptedSpeeds;
+String gSdAttemptedHosts;
 String gSdInitTrace;
 String gSdSpiHost;
 String gSdSpiModeName;
@@ -446,8 +457,24 @@ String sdHexByte(uint8_t value) {
   return String(F("0x")) + hex;
 }
 
-String sdSpiHostLabel() {
-  return F("FSPI");
+String sdSpiHostLabel(uint8_t host) {
+  if (host == FSPI) return F("FSPI");
+#if defined(HSPI)
+  if (host == HSPI) return F("HSPI");
+#endif
+#if defined(VSPI)
+  if (host == VSPI) return F("VSPI");
+#endif
+  return String(F("HOST_")) + String(static_cast<unsigned long>(host));
+}
+
+bool hasAlternateSdSpiHost() {
+  return kSdAlternateSpiHost != kSdPrimarySpiHost;
+}
+
+void selectSdSpiHost(SPIClass& spi, uint8_t host) {
+  gSdSpi = &spi;
+  gSdSpiHost = sdSpiHostLabel(host);
 }
 
 String sdSpiModeLabel(uint8_t mode) {
@@ -504,14 +531,23 @@ void appendSdInitTraceLine(const String& line) {
 
 void resetSdInitTrace(bool allowFormat) {
   gSdPinMap = sdPinMapSummary();
-  gSdSpiHost = sdSpiHostLabel();
+  gSdSpiHost = sdSpiHostLabel(kSdPrimarySpiHost);
   gSdSpiModeName = sdSpiModeLabel(kSdSpiMode);
   gSdAttemptedSpeeds = "";
+  gSdAttemptedHosts = "";
   gSdInitTrace = "";
   appendSdInitTraceLine(String(F("start allow_format=")) + (allowFormat ? F("true") : F("false")));
-  appendSdInitTraceLine(F("flow sd_begin_then_cmd0_diag_on_failure"));
+  appendSdInitTraceLine(F("flow sd_host_fallback_then_sd_begin_cmd0_diag_on_failure"));
   appendSdInitTraceLine(String(F("pin_map ")) + gSdPinMap);
-  appendSdInitTraceLine(String(F("spi_host=")) + gSdSpiHost + F(" spi_mode=") + gSdSpiModeName);
+  String hostPlan = String(F("host_plan primary=")) + sdSpiHostLabel(kSdPrimarySpiHost);
+  if (hasAlternateSdSpiHost()) {
+    hostPlan += F(" fallback=");
+    hostPlan += sdSpiHostLabel(kSdAlternateSpiHost);
+  } else {
+    hostPlan += F(" fallback=none");
+  }
+  appendSdInitTraceLine(hostPlan);
+  appendSdInitTraceLine(String(F("spi_mode=")) + gSdSpiModeName);
   appendSdInitTraceLine(String(F("powerup_settle stage1=")) + String(static_cast<unsigned long>(kSdPowerStage1Ms)) +
                         F("ms stage2=") + String(static_cast<unsigned long>(kSdPowerStage2Ms)) +
                         F("ms stage3=") + String(static_cast<unsigned long>(kSdPowerStage3Ms)) + F("ms"));
@@ -520,6 +556,11 @@ void resetSdInitTrace(bool allowFormat) {
 void recordSdAttemptedSpeed(uint32_t hz) {
   if (gSdAttemptedSpeeds.length() > 0) gSdAttemptedSpeeds += F(", ");
   gSdAttemptedSpeeds += sdSpiSpeedLabel(hz);
+}
+
+void recordSdAttemptedHost(const String& hostLabel) {
+  if (gSdAttemptedHosts.length() > 0) gSdAttemptedHosts += F(", ");
+  gSdAttemptedHosts += hostLabel;
 }
 
 void appendSdTraceToDebugLog() {
@@ -544,27 +585,27 @@ void appendSdTraceToDebugLog() {
 SdCmd0Probe sdProbeCmd0(uint32_t hz) {
   SdCmd0Probe probe;
   probe.hz = hz;
-  gSdSpi.beginTransaction(SPISettings(hz, MSBFIRST, kSdSpiMode));
+  gSdSpi->beginTransaction(SPISettings(hz, MSBFIRST, kSdSpiMode));
   digitalWrite(kSdCsPin, HIGH);
   probe.csIdleHigh = (digitalRead(kSdCsPin) == HIGH);
   for (uint8_t i = 0; i < kSdInitClockBytes; ++i) {
-    gSdSpi.transfer(0xFF);
+    gSdSpi->transfer(0xFF);
   }
   probe.dummyClocksIssued = true;
 
   digitalWrite(kSdCsPin, LOW);
   probe.csAssertedLow = (digitalRead(kSdCsPin) == LOW);
-  gSdSpi.transfer(0xFF);
-  gSdSpi.transfer(0x40);
-  gSdSpi.transfer(0x00);
-  gSdSpi.transfer(0x00);
-  gSdSpi.transfer(0x00);
-  gSdSpi.transfer(0x00);
-  gSdSpi.transfer(0x95);
+  gSdSpi->transfer(0xFF);
+  gSdSpi->transfer(0x40);
+  gSdSpi->transfer(0x00);
+  gSdSpi->transfer(0x00);
+  gSdSpi->transfer(0x00);
+  gSdSpi->transfer(0x00);
+  gSdSpi->transfer(0x95);
 
   uint8_t r1 = 0xFF;
   for (uint8_t i = 0; i < kSdCmdResponsePolls; ++i) {
-    r1 = gSdSpi.transfer(0xFF);
+    r1 = gSdSpi->transfer(0xFF);
     probe.pollBytes[i] = r1;
     ++probe.polls;
     if ((r1 & 0x80) == 0) break;
@@ -572,8 +613,8 @@ SdCmd0Probe sdProbeCmd0(uint32_t hz) {
 
   digitalWrite(kSdCsPin, HIGH);
   probe.csReleasedHigh = (digitalRead(kSdCsPin) == HIGH);
-  gSdSpi.transfer(0xFF);
-  gSdSpi.endTransaction();
+  gSdSpi->transfer(0xFF);
+  gSdSpi->endTransaction();
   probe.r1 = r1;
   return probe;
 }
@@ -588,22 +629,23 @@ void primeSdSpiBus() {
   digitalWrite(kSdMosiPin, HIGH);
   delay(2);
 
-  gSdSpi.begin(kSdSckPin, kSdMisoPin, kSdMosiPin, kSdCsPin);
+  gSdSpi->begin(kSdSckPin, kSdMisoPin, kSdMosiPin, kSdCsPin);
 }
 
 void runSdPowerUpSettleSequence(uint8_t attemptNumber, uint32_t hz) {
   const String prefix = String(F("attempt#")) + String(static_cast<unsigned long>(attemptNumber)) +
+                        F(" host=") + gSdSpiHost +
                         F(" speed=") + sdSpiSpeedLabel(hz) +
                         F(" powerup_settle");
   appendSdInitTraceLine(prefix + F(" stage=1 cs_high_settle_ms=") + String(static_cast<unsigned long>(kSdPowerStage1Ms)));
   delay(kSdPowerStage1Ms);
 
-  gSdSpi.beginTransaction(SPISettings(kSdInitHz, MSBFIRST, kSdSpiMode));
+  gSdSpi->beginTransaction(SPISettings(kSdInitHz, MSBFIRST, kSdSpiMode));
   digitalWrite(kSdCsPin, HIGH);
   for (uint8_t i = 0; i < kSdPowerClockBytes; ++i) {
-    gSdSpi.transfer(0xFF);
+    gSdSpi->transfer(0xFF);
   }
-  gSdSpi.endTransaction();
+  gSdSpi->endTransaction();
   appendSdInitTraceLine(prefix + F(" stage=2 dummy_clocks=") +
                         String(static_cast<unsigned long>(kSdPowerClockBytes * 8U)) +
                         F(" settle_ms=") + String(static_cast<unsigned long>(kSdPowerStage2Ms)));
@@ -617,10 +659,11 @@ void runSdPowerUpSettleSequence(uint8_t attemptNumber, uint32_t hz) {
 bool mountSdAttempt(uint32_t hz, bool allowFormat, uint8_t attemptNumber, String& detail, SdFailureStage& stage, bool& capacityKnown) {
   const String misoHint = sdMisoIdleHint();
   String prefix = String(F("attempt#")) + String(static_cast<unsigned long>(attemptNumber)) +
+                  F(" host=") + gSdSpiHost +
                   F(" speed=") + sdSpiSpeedLabel(hz) +
                   F(" ") + misoHint;
 
-  if (!SD.begin(kSdCsPin, gSdSpi, hz, kSdMountPoint, 5, allowFormat)) {
+  if (!SD.begin(kSdCsPin, *gSdSpi, hz, kSdMountPoint, 5, allowFormat)) {
     const SdCmd0Probe cmd0Probe = sdProbeCmd0(hz);
     const bool cmd0AnyResponse = (cmd0Probe.r1 != 0xFF) && ((cmd0Probe.r1 & 0x80) == 0);
     const String cmd0Summary = String(F(" cmd0_hz=")) + sdSpiSpeedLabel(cmd0Probe.hz) +
@@ -705,20 +748,31 @@ bool mountSdWithRetries(bool allowFormat, String& detail, SdFailureStage& stage,
   usedHz = kSdSpiHz;
   resetSdInitTrace(allowFormat);
   uint8_t attemptNumber = 0;
+  const uint8_t hostCount = hasAlternateSdSpiHost() ? 2 : 1;
 
-  for (const uint32_t hz : kSdSpiRetryHz) {
-    for (uint8_t attempt = 0; attempt < kSdAttemptsPerSpeed; ++attempt) {
-      ++attemptNumber;
-      recordSdAttemptedSpeed(hz);
-      SD.end();
-      gSdSpi.end();
-      primeSdSpiBus();
-      runSdPowerUpSettleSequence(attemptNumber, hz);
-      if (mountSdAttempt(hz, allowFormat, attemptNumber, detail, stage, capacityKnown)) {
-        usedHz = hz;
-        return true;
+  for (uint8_t hostIndex = 0; hostIndex < hostCount; ++hostIndex) {
+    if (hostIndex == 0) {
+      selectSdSpiHost(gSdSpiPrimary, kSdPrimarySpiHost);
+    } else {
+      selectSdSpiHost(gSdSpiAlternate, kSdAlternateSpiHost);
+    }
+    recordSdAttemptedHost(gSdSpiHost);
+    appendSdInitTraceLine(String(F("host_select=")) + gSdSpiHost);
+
+    for (const uint32_t hz : kSdSpiRetryHz) {
+      for (uint8_t attempt = 0; attempt < kSdAttemptsPerSpeed; ++attempt) {
+        ++attemptNumber;
+        recordSdAttemptedSpeed(hz);
+        SD.end();
+        gSdSpi->end();
+        primeSdSpiBus();
+        runSdPowerUpSettleSequence(attemptNumber, hz);
+        if (mountSdAttempt(hz, allowFormat, attemptNumber, detail, stage, capacityKnown)) {
+          usedHz = hz;
+          return true;
+        }
+        delay(12);
       }
-      delay(12);
     }
   }
   return false;
@@ -936,6 +990,8 @@ void handleSdStatusApi() {
   json += jsonEscape(gSdPinMap);
   json += "\",\"spi_host\":\"";
   json += jsonEscape(gSdSpiHost);
+  json += "\",\"attempted_spi_hosts\":\"";
+  json += jsonEscape(gSdAttemptedHosts);
   json += "\",\"spi_mode\":\"";
   json += jsonEscape(gSdSpiModeName);
   json += "\",\"attempted_spi_speeds\":\"";
@@ -970,6 +1026,9 @@ void handleSdDiagnosticsPage() {
   body += htmlEscape(gSdSpiHost);
   body += F(" / ");
   body += htmlEscape(gSdSpiModeName);
+  body += F("</p>");
+  body += F("<p><strong>Attempted SPI hosts:</strong> ");
+  body += gSdAttemptedHosts.length() > 0 ? htmlEscape(gSdAttemptedHosts) : F("(none)");
   body += F("</p>");
   body += F("<p><strong>Attempted SPI init speeds:</strong> ");
   body += gSdAttemptedSpeeds.length() > 0 ? htmlEscape(gSdAttemptedSpeeds) : F("(none)");
@@ -1650,6 +1709,7 @@ bool mountSd() {
     serialAndDebugLog(F("SD: MOUNT FAILED"));
     serialAndDebugLogf("SD: PIN MAP %s", gSdPinMap.c_str());
     serialAndDebugLogf("SD: SPI HOST=%s MODE=%s", gSdSpiHost.c_str(), gSdSpiModeName.c_str());
+    serialAndDebugLogf("SD: ATTEMPTED HOSTS %s", gSdAttemptedHosts.length() > 0 ? gSdAttemptedHosts.c_str() : "none");
     serialAndDebugLogf("SD: ATTEMPTED SPI %s", gSdAttemptedSpeeds.length() > 0 ? gSdAttemptedSpeeds.c_str() : "none");
     appendSdTraceToDebugLog();
     serialAndDebugLogf("SD: DIAG STAGE=%s", sdStageCode(gSdStatus.stage).c_str());
@@ -1660,6 +1720,7 @@ bool mountSd() {
   serialAndDebugLog(F("SD: MOUNTED"));
   serialAndDebugLogf("SD: PIN MAP %s", gSdPinMap.c_str());
   serialAndDebugLogf("SD: SPI HOST=%s MODE=%s", gSdSpiHost.c_str(), gSdSpiModeName.c_str());
+  serialAndDebugLogf("SD: ATTEMPTED HOSTS %s", gSdAttemptedHosts.c_str());
   serialAndDebugLogf("SD: ATTEMPTED SPI %s", gSdAttemptedSpeeds.c_str());
   appendSdTraceToDebugLog();
   if (!capacityKnown) {
