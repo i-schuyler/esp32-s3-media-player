@@ -12,6 +12,27 @@
 - PR: <url>
 - Issue: <url>
 
+## [v0.1.16] - 2026-04-07
+
+### Added
+
+* Issue #53 implementation plan mapping software-SPI SD diagnostic fallback scope to `ACCEPTANCE.md` and `docs/SMOKE_TEST_SPEC.md`.
+* Browser-visible SD diagnostics now include attempted SD bus paths (`hardware-spi` and diagnostic `software-spi`) in addition to SPI host/speed context.
+
+### Changed
+
+* SD bring-up diagnostics now execute a bounded software-SPI CMD0 probe after hardware SPI host/speed retries are exhausted.
+* SD init trace lines now label each hardware attempt with `bus=hardware-spi` and append a software probe line with `bus=software-spi` for direct comparison on identical wiring/card state.
+
+### Fixed
+
+* Reduced ambiguity in persistent CMD0 timeout triage by adding a non-invasive software-SPI discriminator without altering normal mount, OTA, or streaming flows.
+
+### Notes
+
+* PR:
+* Issue: https://github.com/i-schuyler/esp32-s3-media-player/issues/53
+
 ## [v0.1.15] - 2026-04-06
 
 ### Added
