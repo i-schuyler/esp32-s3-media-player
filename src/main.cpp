@@ -477,6 +477,29 @@ String sdPinProfileLabel(size_t index) {
   return String(kSdPinProfiles[index].name);
 }
 
+bool parseStrictProfileIndex(const String& raw, size_t& parsedIndex) {
+  if (raw.length() == 0) return false;
+  unsigned long value = 0;
+  for (size_t i = 0; i < raw.length(); ++i) {
+    const char c = raw.charAt(i);
+    if (c < '0' || c > '9') return false;
+    value = value * 10UL + static_cast<unsigned long>(c - '0');
+    if (value > static_cast<unsigned long>(kSdPinProfileCount)) return false;
+  }
+  parsedIndex = static_cast<size_t>(value);
+  return parsedIndex < kSdPinProfileCount;
+}
+
+bool sdPinProfileIndexFromName(const String& profileName, size_t& resolvedIndex) {
+  for (size_t i = 0; i < kSdPinProfileCount; ++i) {
+    if (profileName == kSdPinProfiles[i].name) {
+      resolvedIndex = i;
+      return true;
+    }
+  }
+  return false;
+}
+
 void selectSdPinProfile(size_t index) {
   if (index >= kSdPinProfileCount) return;
   gSdActivePinProfileIndex = index;
@@ -1067,6 +1090,7 @@ void handleRoot() {
   body += F("<p>Current selected profile: <strong><span id='sdSel'>loading...</span></strong></p>");
   body += F("<p>Active diagnostics profile: <strong><span id='sdActive'>loading...</span></strong></p>");
   body += F("<p>Active pin map: <code id='sdMap'>loading...</code></p>");
+  body += F("<p>Reboot behavior: selection is deterministic and resets to <code>default-io13-12-11-10</code> at boot.</p>");
   body += F("<form id='sdProfileForm'>");
   body += F("<label for='sdProfile'>Choose wired SD profile:</label> ");
   body += F("<select id='sdProfile' name='index'></select> ");
@@ -1078,9 +1102,9 @@ void handleRoot() {
   body += F("<p id='resetStatus'>No reset requested.</p>");
   body += F("<script>");
   body += F("const sdSel=document.getElementById('sdSel');const sdActive=document.getElementById('sdActive');const sdMap=document.getElementById('sdMap');const sdProfile=document.getElementById('sdProfile');const sdProfileStatus=document.getElementById('sdProfileStatus');");
-  body += F("function setProfiles(j){const list=Array.isArray(j.profiles)?j.profiles:[];if(sdProfile.options.length!==list.length){sdProfile.innerHTML='';for(const p of list){const o=document.createElement('option');o.value=String(p.index);o.textContent=p.name+' ('+p.pin_map+')';sdProfile.appendChild(o);}}sdProfile.value=String(j.selected_pin_profile_index);sdSel.textContent=j.selected_pin_profile||'unknown';sdActive.textContent=j.active_pin_profile||'unknown';sdMap.textContent=j.pin_map||'unknown';sdProfileStatus.textContent='SD status: '+(j.sd_title||'unknown')+' ('+(j.sd_stage||'unknown')+')';}");
+  body += F("function setProfiles(j){const list=Array.isArray(j.profiles)?j.profiles:[];if(sdProfile.options.length!==list.length){sdProfile.innerHTML='';for(const p of list){const o=document.createElement('option');o.value=String(p.value||p.name||p.index);o.textContent=p.name+' ('+p.pin_map+')';sdProfile.appendChild(o);}}const sel=String(j.selected_pin_profile||j.selected_pin_profile_index||'');sdProfile.value=sel;sdSel.textContent=j.selected_pin_profile||'unknown';sdActive.textContent=j.active_pin_profile||'unknown';sdMap.textContent=j.pin_map||'unknown';sdProfileStatus.textContent='SD status: '+(j.sd_title||'unknown')+' ('+(j.sd_stage||'unknown')+')';}");
   body += F("function loadProfiles(){fetch('/api/sd/profile',{cache:'no-store'}).then(r=>r.json()).then(setProfiles).catch(()=>{sdProfileStatus.textContent='SD profile status unavailable';});}");
-  body += F("document.getElementById('sdProfileForm').addEventListener('submit',async function(e){e.preventDefault();const idx=encodeURIComponent(sdProfile.value);sdProfileStatus.textContent='Applying selected profile and rerunning diagnostics...';const r=await fetch('/api/sd/profile',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'index='+idx});let j={};try{j=await r.json();}catch(_e){}if(!r.ok){sdProfileStatus.textContent='Failed to apply profile';return;}setProfiles(j);});");
+  body += F("document.getElementById('sdProfileForm').addEventListener('submit',async function(e){e.preventDefault();const profile=encodeURIComponent(sdProfile.value);sdProfileStatus.textContent='Applying selected profile and rerunning diagnostics...';const r=await fetch('/api/sd/profile',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'profile='+profile});let j={};try{j=await r.json();}catch(_e){}if(!r.ok){sdProfileStatus.textContent='Failed to apply profile';return;}setProfiles(j);});");
   body += F("const resetStatus=document.getElementById('resetStatus');document.getElementById('resetForm').addEventListener('submit',async function(e){e.preventDefault();if(!confirm('Restart device now?'))return;resetStatus.textContent='Scheduling restart...';const r=await fetch('/api/system/reset',{method:'POST'});if(r.ok){resetStatus.textContent='Restart scheduled. Reconnect to ESP32-MEDIA after reboot.';}else{resetStatus.textContent='Reset request failed.';}});");
   body += F("loadProfiles();setInterval(loadProfiles,2000);");
   body += F("</script>");
@@ -1171,7 +1195,7 @@ void handleSdStatusApi() {
   json += jsonEscape(sdPinProfileLabel(gSdSelectedPinProfileIndex));
   json += "\",\"selected_pin_profile_index\":";
   json += String(static_cast<unsigned long>(gSdSelectedPinProfileIndex));
-  json += "\",\"attempted_pin_profiles\":\"";
+  json += ",\"attempted_pin_profiles\":\"";
   json += jsonEscape(gSdAttemptedPinProfiles);
   json += "\",\"spi_host\":\"";
   json += jsonEscape(gSdSpiHost);
@@ -1216,6 +1240,8 @@ String sdProfileSelectionJson() {
     json += String(static_cast<unsigned long>(i));
     json += ",\"name\":\"";
     json += jsonEscape(sdPinProfileLabel(i));
+    json += "\",\"value\":\"";
+    json += jsonEscape(sdPinProfileLabel(i));
     json += "\",\"pin_map\":\"";
     json += jsonEscape(gSdPinMap);
     json += "\"}";
@@ -1230,19 +1256,25 @@ void handleSdProfileApi() {
 }
 
 void handleSdProfilePost() {
+  const String profileRaw = server.arg("profile");
   const String idxRaw = server.arg("index");
-  if (idxRaw.length() == 0) {
-    server.send(400, F("application/json"), "{\"error\":\"index_required\"}");
-    return;
+  size_t resolvedIndex = kSdDefaultPinProfileIndex;
+
+  if (profileRaw.length() > 0) {
+    if (!sdPinProfileIndexFromName(profileRaw, resolvedIndex)) {
+      if (!parseStrictProfileIndex(profileRaw, resolvedIndex)) {
+        server.send(400, F("application/json"), "{\"error\":\"invalid_profile\"}");
+        return;
+      }
+    }
+  } else {
+    if (!parseStrictProfileIndex(idxRaw, resolvedIndex)) {
+      server.send(400, F("application/json"), "{\"error\":\"invalid_index\"}");
+      return;
+    }
   }
 
-  const long requestedIndex = idxRaw.toInt();
-  if (requestedIndex < 0 || static_cast<size_t>(requestedIndex) >= kSdPinProfileCount) {
-    server.send(400, F("application/json"), "{\"error\":\"invalid_index\"}");
-    return;
-  }
-
-  gSdSelectedPinProfileIndex = static_cast<size_t>(requestedIndex);
+  gSdSelectedPinProfileIndex = resolvedIndex;
   selectSdPinProfile(gSdSelectedPinProfileIndex);
   serialAndDebugLogf("SD: PROFILE SELECTED %s", gSdPinProfileName.c_str());
   mountSd();
@@ -1282,6 +1314,7 @@ void handleSdDiagnosticsPage() {
   body += F("<p><strong>Pin map in use:</strong> ");
   body += htmlEscape(gSdPinMap);
   body += F("</p>");
+  body += F("<p><strong>Reboot behavior:</strong> Deterministic default on boot (<code>default-io13-12-11-10</code>).</p>");
   body += F("<p><strong>Attempted pin profiles:</strong> ");
   body += gSdAttemptedPinProfiles.length() > 0 ? htmlEscape(gSdAttemptedPinProfiles) : F("(none)");
   body += F("</p>");
