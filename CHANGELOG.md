@@ -12,6 +12,28 @@
 - PR: <url>
 - Issue: <url>
 
+## [v0.1.19] - 2026-04-10
+
+### Added
+
+* Issue #59 implementation plan mapping SD pin-profile UI apply reliability scope to `ACCEPTANCE.md` and `docs/SMOKE_TEST_SPEC.md`.
+* Home page and SD diagnostics pages now explicitly document deterministic reboot behavior for SD pin profile selection (resets to default profile on boot).
+
+### Changed
+
+* SD profile apply API now accepts explicit profile values (profile name) from the web UI while remaining backward-compatible with index-based requests.
+* Home page SD profile form now posts explicit selected profile value when applying/rerunning diagnostics.
+
+### Fixed
+
+* Prevented silent fallback to default profile when SD profile apply payload is non-numeric by enforcing strict index parsing and profile-name resolution.
+* Corrected `/api/sd/status` JSON formatting for attempted pin profile field.
+
+### Notes
+
+* PR:
+* Issue: https://github.com/i-schuyler/esp32-s3-media-player/issues/59
+
 ## [v0.1.18] - 2026-04-07
 
 ### Added
