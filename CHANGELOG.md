@@ -12,6 +12,27 @@
 - PR: <url>
 - Issue: <url>
 
+## [v0.1.20] - 2026-04-11
+
+### Added
+
+* Issue #61 implementation plan mapping deeper SD raw software-SPI handshake diagnostics to `ACCEPTANCE.md` and `docs/SMOKE_TEST_SPEC.md`.
+* Post-failure software-SPI diagnostics now attempt raw `CMD0`, `CMD8`, `CMD55`, `ACMD41`, and `CMD58` on the selected pin profile.
+
+### Changed
+
+* SD init trace and detail output now include bounded per-command software-SPI diagnostic outcomes (attempted/result/R1 and bounded response bytes where applicable).
+* Software-SPI diagnostic output now emits an explicit summary classification (`no_wire_response`, `partial_response`, `partial_or_late_init_response`) to improve wire-level triage clarity.
+
+### Fixed
+
+* Reduced ambiguity when `SD.begin` fails by extending raw fallback diagnostics beyond CMD0 while preserving selected-profile-only behavior and existing pages/endpoints.
+
+### Notes
+
+* PR:
+* Issue: https://github.com/i-schuyler/esp32-s3-media-player/issues/61
+
 ## [v0.1.19] - 2026-04-10
 
 ### Added

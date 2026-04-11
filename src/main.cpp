@@ -159,6 +159,24 @@ struct SdCmd0Probe {
   uint32_t hz = kSdInitHz;
 };
 
+struct SdRawCommandProbe {
+  bool attempted = false;
+  uint8_t cmd = 0;
+  uint8_t r1 = 0xFF;
+  uint8_t polls = 0;
+  uint8_t pollBytes[kSdCmdResponsePolls] = {0};
+  uint8_t responseLen = 0;
+  uint8_t responseBytes[4] = {0};
+};
+
+struct SdRawSoftSpiDiag {
+  SdRawCommandProbe cmd0;
+  SdRawCommandProbe cmd8;
+  SdRawCommandProbe cmd55;
+  SdRawCommandProbe acmd41;
+  SdRawCommandProbe cmd58;
+};
+
 bool mountSd();
 
 String htmlEscape(const String& in) {
@@ -561,6 +579,42 @@ String sdPollBytesSummary(const SdCmd0Probe& probe) {
   return out;
 }
 
+String sdBytesSummary(const uint8_t* bytes, uint8_t len, uint8_t limit = 6) {
+  if (len == 0) return F("none");
+  String out;
+  const uint8_t shown = len > limit ? limit : len;
+  for (uint8_t i = 0; i < shown; ++i) {
+    if (i > 0) out += '/';
+    out += sdHexByte(bytes[i]);
+  }
+  if (len > shown) out += F("/...");
+  return out;
+}
+
+String sdPollBytesSummary(const SdRawCommandProbe& probe) {
+  return sdBytesSummary(probe.pollBytes, probe.polls);
+}
+
+bool sdProbeHasR1(const SdRawCommandProbe& probe) {
+  return (probe.r1 & 0x80) == 0;
+}
+
+bool sdProbeTimedOut(const SdRawCommandProbe& probe) {
+  if (sdProbeHasR1(probe)) return false;
+  if (probe.polls == 0) return true;
+  for (uint8_t i = 0; i < probe.polls; ++i) {
+    if (probe.pollBytes[i] != 0xFF) return false;
+  }
+  return true;
+}
+
+String sdProbeResultLabel(const SdRawCommandProbe& probe, const __FlashStringHelper* successKind) {
+  if (!probe.attempted) return F("not_attempted");
+  if (sdProbeHasR1(probe)) return String(successKind);
+  if (sdProbeTimedOut(probe)) return F("timeout");
+  return F("no_response");
+}
+
 String sdCmd0OutcomeLabel(const SdCmd0Probe& probe) {
   if (probe.r1 == 0x01) return F("idle");
   if ((probe.r1 & 0x80) == 0) return String(F("resp_")) + sdHexByte(probe.r1);
@@ -710,10 +764,8 @@ uint8_t sdSoftSpiTransfer(uint8_t tx) {
   return rx;
 }
 
-SdCmd0Probe sdProbeCmd0SoftwareSpi() {
-  SdCmd0Probe probe;
+void initSdSoftwareSpiPins() {
   const SdPinProfile& profile = kSdPinProfiles[gSdActivePinProfileIndex];
-  probe.hz = 1000000UL / (kSdSoftSpiHalfPeriodUs * 2UL * 8UL);
   pinMode(profile.cs, OUTPUT);
   pinMode(profile.sck, OUTPUT);
   pinMode(profile.mosi, OUTPUT);
@@ -722,7 +774,98 @@ SdCmd0Probe sdProbeCmd0SoftwareSpi() {
   digitalWrite(profile.sck, HIGH);
   digitalWrite(profile.mosi, HIGH);
   delayMicroseconds(kSdSoftSpiHalfPeriodUs);
+}
 
+void sdSoftSpiIssueInitClocks(uint8_t bytes) {
+  const SdPinProfile& profile = kSdPinProfiles[gSdActivePinProfileIndex];
+  digitalWrite(profile.cs, HIGH);
+  for (uint8_t i = 0; i < bytes; ++i) {
+    sdSoftSpiTransfer(0xFF);
+  }
+}
+
+SdRawCommandProbe sdSoftSpiProbeCommand(uint8_t cmd, uint32_t arg, uint8_t crc, uint8_t responseLen) {
+  SdRawCommandProbe probe;
+  probe.attempted = true;
+  probe.cmd = cmd;
+  probe.responseLen = responseLen > 4 ? 4 : responseLen;
+  const SdPinProfile& profile = kSdPinProfiles[gSdActivePinProfileIndex];
+  digitalWrite(profile.cs, LOW);
+  sdSoftSpiTransfer(0xFF);
+  sdSoftSpiTransfer(static_cast<uint8_t>(0x40U | cmd));
+  sdSoftSpiTransfer(static_cast<uint8_t>((arg >> 24) & 0xFFU));
+  sdSoftSpiTransfer(static_cast<uint8_t>((arg >> 16) & 0xFFU));
+  sdSoftSpiTransfer(static_cast<uint8_t>((arg >> 8) & 0xFFU));
+  sdSoftSpiTransfer(static_cast<uint8_t>(arg & 0xFFU));
+  sdSoftSpiTransfer(crc);
+
+  uint8_t r1 = 0xFF;
+  for (uint8_t i = 0; i < kSdCmdResponsePolls; ++i) {
+    r1 = sdSoftSpiTransfer(0xFF);
+    probe.pollBytes[i] = r1;
+    ++probe.polls;
+    if ((r1 & 0x80U) == 0) break;
+  }
+  probe.r1 = r1;
+  if (sdProbeHasR1(probe)) {
+    for (uint8_t i = 0; i < probe.responseLen; ++i) {
+      probe.responseBytes[i] = sdSoftSpiTransfer(0xFF);
+    }
+  }
+  digitalWrite(profile.cs, HIGH);
+  sdSoftSpiTransfer(0xFF);
+  return probe;
+}
+
+String sdSoftSpiCommandTrace(const char* name, const SdRawCommandProbe& probe, const __FlashStringHelper* successKind) {
+  String line = String(F("software_spi_raw cmd=")) + name +
+                F(" attempted=") + (probe.attempted ? F("yes") : F("no")) +
+                F(" result=") + sdProbeResultLabel(probe, successKind) +
+                F(" r1=") + sdHexByte(probe.r1) +
+                F(" polls=") + String(static_cast<unsigned long>(probe.polls)) +
+                F(" poll_bytes=") + sdPollBytesSummary(probe);
+  if (sdProbeHasR1(probe) && probe.responseLen > 0) {
+    line += F(" response=");
+    line += sdBytesSummary(probe.responseBytes, probe.responseLen, 4);
+  }
+  return line;
+}
+
+String sdSoftSpiCommandDetail(const char* name, const SdRawCommandProbe& probe, const __FlashStringHelper* successKind) {
+  String out = String(name) + F("=") + sdProbeResultLabel(probe, successKind) +
+               F("(r1=") + sdHexByte(probe.r1) +
+               F(",poll=") + sdPollBytesSummary(probe);
+  if (sdProbeHasR1(probe) && probe.responseLen > 0) {
+    out += F(",resp=");
+    out += sdBytesSummary(probe.responseBytes, probe.responseLen, 4);
+  }
+  out += F(")");
+  return out;
+}
+
+bool sdDiagAnyResponse(const SdRawSoftSpiDiag& diag) {
+  return sdProbeHasR1(diag.cmd0) || sdProbeHasR1(diag.cmd8) || sdProbeHasR1(diag.cmd55) || sdProbeHasR1(diag.acmd41) ||
+         sdProbeHasR1(diag.cmd58);
+}
+
+SdRawSoftSpiDiag runSdRawSoftwareSpiDiag() {
+  SdRawSoftSpiDiag diag;
+  initSdSoftwareSpiPins();
+  sdSoftSpiIssueInitClocks(kSdInitClockBytes);
+
+  diag.cmd0 = sdSoftSpiProbeCommand(0, 0x00000000UL, 0x95, 0);
+  diag.cmd8 = sdSoftSpiProbeCommand(8, 0x000001AAUL, 0x87, 4);
+  diag.cmd55 = sdSoftSpiProbeCommand(55, 0x00000000UL, 0x65, 0);
+  diag.acmd41 = sdSoftSpiProbeCommand(41, 0x40000000UL, 0x77, 0);
+  diag.cmd58 = sdSoftSpiProbeCommand(58, 0x00000000UL, 0xFD, 4);
+  return diag;
+}
+
+SdCmd0Probe sdProbeCmd0SoftwareSpi() {
+  SdCmd0Probe probe;
+  const SdPinProfile& profile = kSdPinProfiles[gSdActivePinProfileIndex];
+  probe.hz = 1000000UL / (kSdSoftSpiHalfPeriodUs * 2UL * 8UL);
+  initSdSoftwareSpiPins();
   probe.csIdleHigh = (digitalRead(profile.cs) == HIGH);
   for (uint8_t i = 0; i < kSdInitClockBytes; ++i) {
     sdSoftSpiTransfer(0xFF);
@@ -928,31 +1071,34 @@ bool mountSdWithRetries(bool allowFormat, String& detail, SdFailureStage& stage,
   ++attemptNumber;
   recordSdAttemptedBus(F("software-spi"));
   const String softMisoHint = sdMisoIdleHint();
-  const SdCmd0Probe softProbe = sdProbeCmd0SoftwareSpi();
-  const bool softCmd0AnyResponse = (softProbe.r1 != 0xFF) && ((softProbe.r1 & 0x80) == 0);
+  const uint32_t softHz = 1000000UL / (kSdSoftSpiHalfPeriodUs * 2UL * 8UL);
+  const SdRawSoftSpiDiag softDiag = runSdRawSoftwareSpiDiag();
+  const bool softAnyResponse = sdDiagAnyResponse(softDiag);
+  const bool softAcmdInitResponse = sdProbeHasR1(softDiag.acmd41) || sdProbeHasR1(softDiag.cmd58);
+  const String summary = !softAnyResponse ? F("no_wire_response")
+                                          : (softAcmdInitResponse ? F("partial_or_late_init_response") : F("partial_response"));
+
   appendSdInitTraceLine(String(F("attempt#")) + String(static_cast<unsigned long>(attemptNumber)) +
                         F(" profile=") + gSdPinProfileName +
-                        F(" bus=software-spi host=bitbang speed=") + sdSpiSpeedLabel(softProbe.hz) +
+                        F(" bus=software-spi host=bitbang speed=") + sdSpiSpeedLabel(softHz) +
                         F(" ") + softMisoHint +
-                        F(" cmd0_hz=") + sdSpiSpeedLabel(softProbe.hz) +
-                        F(" cmd0=") + sdCmd0OutcomeLabel(softProbe) +
-                        F(" cmd0_r1=") + sdHexByte(softProbe.r1) +
-                        F(" cmd0_polls=") + String(static_cast<unsigned long>(softProbe.polls)) +
-                        F(" cmd0_first_bytes=") + sdPollBytesSummary(softProbe) +
-                        F(" dummy_clocks=") + (softProbe.dummyClocksIssued ? F("yes") : F("no")) +
-                        F(" cs_idle_high=") + (softProbe.csIdleHigh ? F("yes") : F("no")) +
-                        F(" cs_assert_low=") + (softProbe.csAssertedLow ? F("yes") : F("no")) +
-                        F(" cs_release_high=") + (softProbe.csReleasedHigh ? F("yes") : F("no")) +
-                        F(" stage=software_spi_diag_only"));
-  if (softCmd0AnyResponse) {
-    detail += String(F(" | software-spi cmd0_response=")) + sdHexByte(softProbe.r1) +
-              F(" first_bytes=") + sdPollBytesSummary(softProbe);
-    if (stage == SdFailureStage::kCardCommFailure) {
-      stage = SdFailureStage::kInitBusFailure;
-    }
-  } else {
-    detail += String(F(" | software-spi cmd0_timeout r1=")) + sdHexByte(softProbe.r1) +
-              F(" first_bytes=") + sdPollBytesSummary(softProbe);
+                        F(" summary=") + summary +
+                        F(" stage=software_spi_raw_diag_only"));
+  appendSdInitTraceLine(sdSoftSpiCommandTrace("CMD0", softDiag.cmd0, F("r1")));
+  appendSdInitTraceLine(sdSoftSpiCommandTrace("CMD8", softDiag.cmd8, F("r7")));
+  appendSdInitTraceLine(sdSoftSpiCommandTrace("CMD55", softDiag.cmd55, F("r1")));
+  appendSdInitTraceLine(sdSoftSpiCommandTrace("ACMD41", softDiag.acmd41, F("r1")));
+  appendSdInitTraceLine(sdSoftSpiCommandTrace("CMD58", softDiag.cmd58, F("r3")));
+
+  detail += String(F(" | software-spi raw(")) + summary + F("): ") +
+            sdSoftSpiCommandDetail("cmd0", softDiag.cmd0, F("r1")) + F("; ") +
+            sdSoftSpiCommandDetail("cmd8", softDiag.cmd8, F("r7")) + F("; ") +
+            sdSoftSpiCommandDetail("cmd55", softDiag.cmd55, F("r1")) + F("; ") +
+            sdSoftSpiCommandDetail("acmd41", softDiag.acmd41, F("r1")) + F("; ") +
+            sdSoftSpiCommandDetail("cmd58", softDiag.cmd58, F("r3"));
+
+  if (softAnyResponse && stage == SdFailureStage::kCardCommFailure) {
+    stage = SdFailureStage::kInitBusFailure;
   }
   return false;
 }
